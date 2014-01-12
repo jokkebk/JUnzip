@@ -8,8 +8,39 @@
 
 #include "junzip.h"
 
+// Replace this with a function that creates the directory if necessary
+// and returns 1 if you want directory support
+int makeDirectory(char *dir) {
+    printf("mkdir(%s)\n", dir);
+    return 0;
+    // For MinGW (requires io.h)
+    //mkdir(dir);
+    //return 1;
+}
+
 void writeFile(char *filename, void *data, long bytes) {
-    FILE *out = fopen(filename, "wb");
+    FILE *out;
+    int i;
+
+    // simplistic directory creation support
+    for(i=0; filename[i]; i++) {
+        if(filename[i] != '/')
+            continue;
+
+        filename[i] = '\0'; // terminate string at this point
+
+        if(!makeDirectory(filename)) {
+            fprintf(stderr, "Couldn't create subdirectory %s!\n", filename);
+            return;
+        }
+
+        filename[i] = '/'; // Put the separator back
+    }
+
+    if(!i || filename[i-1] == '/')
+        return; // empty filename or directory entry
+
+    out = fopen(filename, "wb");
 
     if(out != NULL) {
         fwrite(data, 1, bytes, out); // best effort is enough here

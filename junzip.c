@@ -65,7 +65,6 @@ int jzReadCentralDirectory(FILE *zip, JZEndRecord *endRecord,
         JZRecordCallback callback) {
     JZGlobalFileHeader fileHeader;
     JZFileHeader header;
-    long totalSize = 0;
     int i;
 
     if(fseek(zip, endRecord->centralDirectoryOffset, SEEK_SET)) {
@@ -107,8 +106,6 @@ int jzReadCentralDirectory(FILE *zip, JZEndRecord *endRecord,
         // Construct JZFileHeader from global file header
         memcpy(&header, &fileHeader.compressionMethod, sizeof(header));
         header.offset = fileHeader.relativeOffsetOflocalHeader;
-
-        totalSize += fileHeader.uncompressedSize;
 
         if(!callback(zip, i, &header, (char *)jzBuffer))
             break; // end if callback returns zero
