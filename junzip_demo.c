@@ -65,7 +65,7 @@ int processFile(FILE *zip) {
         return -1;
     }
 
-    printf("%s, %ld / %ld bytes at offset %08lX\n", filename,
+    printf("%s, %d / %d bytes at offset %08X\n", filename,
             header.compressedSize, header.uncompressedSize, header.offset);
 
     if(jzReadData(zip, &header, data) != Z_OK) {

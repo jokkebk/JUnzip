@@ -6,59 +6,65 @@
 #ifndef __JUNZIP_H
 #define __JUNZIP_H
 
+#include <stdint.h>
+
+// If you don't have stdint.h, the following two lines should work for most 32/64 bit systems
+// typedef unsigned int uint32_t;
+// typedef unsigned short uint16_t;
+
 typedef struct __attribute__ ((__packed__)) {
-    unsigned long signature;
-    unsigned short versionNeededToExtract; // unsupported
-    unsigned short generalPurposeBitFlag; // unsupported
-    unsigned short compressionMethod;
-    unsigned short lastModFileTime;
-    unsigned short lastModFileDate;
-    unsigned long crc32;
-    unsigned long compressedSize;
-    unsigned long uncompressedSize;
-    unsigned short fileNameLength;
-    unsigned short extraFieldLength; // unsupported
+    uint32_t signature;
+    uint16_t versionNeededToExtract; // unsupported
+    uint16_t generalPurposeBitFlag; // unsupported
+    uint16_t compressionMethod;
+    uint16_t lastModFileTime;
+    uint16_t lastModFileDate;
+    uint32_t crc32;
+    uint32_t compressedSize;
+    uint32_t uncompressedSize;
+    uint16_t fileNameLength;
+    uint16_t extraFieldLength; // unsupported
 } JZLocalFileHeader;
 
 typedef struct __attribute__ ((__packed__)) {
-    unsigned long signature;
-    unsigned short versionMadeBy; // unsupported
-    unsigned short versionNeededToExtract; // unsupported
-    unsigned short generalPurposeBitFlag; // unsupported
-    unsigned short compressionMethod;
-    unsigned short lastModFileTime;
-    unsigned short lastModFileDate;
-    unsigned long crc32;
-    unsigned long compressedSize;
-    unsigned long uncompressedSize;
-    unsigned short fileNameLength;
-    unsigned short extraFieldLength; // unsupported
-    unsigned short fileCommentLength; // unsupported
-    unsigned short diskNumberStart; // unsupported
-    unsigned short internalFileAttributes; // unsupported
-    unsigned long externalFileAttributes; // unsupported
-    unsigned long relativeOffsetOflocalHeader;
+    uint32_t signature;
+    uint16_t versionMadeBy; // unsupported
+    uint16_t versionNeededToExtract; // unsupported
+    uint16_t generalPurposeBitFlag; // unsupported
+    uint16_t compressionMethod;
+    uint16_t lastModFileTime;
+    uint16_t lastModFileDate;
+    uint32_t crc32;
+    uint32_t compressedSize;
+    uint32_t uncompressedSize;
+    uint16_t fileNameLength;
+    uint16_t extraFieldLength; // unsupported
+    uint16_t fileCommentLength; // unsupported
+    uint16_t diskNumberStart; // unsupported
+    uint16_t internalFileAttributes; // unsupported
+    uint32_t externalFileAttributes; // unsupported
+    uint32_t relativeOffsetOflocalHeader;
 } JZGlobalFileHeader;
 
 typedef struct __attribute__ ((__packed__)) {
-    unsigned short compressionMethod;
-    unsigned short lastModFileTime;
-    unsigned short lastModFileDate;
-    unsigned long crc32;
-    unsigned long compressedSize;
-    unsigned long uncompressedSize;
-    unsigned long offset;
+    uint16_t compressionMethod;
+    uint16_t lastModFileTime;
+    uint16_t lastModFileDate;
+    uint32_t crc32;
+    uint32_t compressedSize;
+    uint32_t uncompressedSize;
+    uint32_t offset;
 } JZFileHeader;
 
 typedef struct __attribute__ ((__packed__)) {
-    unsigned long signature; // 0x06054b50
-    unsigned short diskNumber; // unsupported
-    unsigned short centralDirectoryDiskNumber; // unsupported
-    unsigned short numEntriesThisDisk; // unsupported
-    unsigned short numEntries;
-    unsigned long centralDirectorySize;
-    unsigned long centralDirectoryOffset;
-    unsigned short zipCommentLength;
+    uint32_t signature; // 0x06054b50
+    uint16_t diskNumber; // unsupported
+    uint16_t centralDirectoryDiskNumber; // unsupported
+    uint16_t numEntriesThisDisk; // unsupported
+    uint16_t numEntries;
+    uint32_t centralDirectorySize;
+    uint32_t centralDirectoryOffset;
+    uint16_t zipCommentLength;
     // Followed by .ZIP file comment (variable size)
 } JZEndRecord;
 
