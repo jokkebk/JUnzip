@@ -9,21 +9,19 @@
 #include "junzip.h"
 
 int main() {
-    printf("Verifying JZLocalFileHeader (%d bytes)\n",
-            sizeof(JZLocalFileHeader));
-    assert(sizeof(JZLocalFileHeader) == 30);
+    printf("Verifying that all structs are correct size...\n");
 
-    printf("Verifying JZGlobalFileHeader (%d bytes)\n",
-            sizeof(JZGlobalFileHeader));
-    assert(sizeof(JZGlobalFileHeader) == 46);
+    printf("JZLocalFileHeader: %d vs. 30: ", sizeof(JZLocalFileHeader));
+    if(sizeof(JZLocalFileHeader) == 30) puts("OK"); else puts("FAILED!");
 
-    printf("Verifying JZFileHeader (%d bytes)\n",
-            sizeof(JZFileHeader));
-    assert(sizeof(JZFileHeader) == 22);
+    printf("JZGlobalFileHeader: %d vs. 46: ", sizeof(JZGlobalFileHeader));
+    if(sizeof(JZGlobalFileHeader) == 46) puts("OK"); else puts("FAILED!");
 
-    printf("Verifying JZEndRecord (%d bytes)\n",
-            sizeof(JZEndRecord));
-    assert(sizeof(JZEndRecord) == 22);
+    printf("JZFileHeader: %d vs. 22: ", sizeof(JZFileHeader));
+    if(sizeof(JZFileHeader) == 22) puts("OK"); else puts("FAILED!");
+
+    printf("JZEndRecord: %d vs. 22: ", sizeof(JZEndRecord));
+    if(sizeof(JZEndRecord) == 22) puts("OK"); else puts("FAILED!");
 
     return 0;
 }
