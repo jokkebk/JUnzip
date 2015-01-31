@@ -13,4 +13,8 @@ any system. Compiling the example on most systems with zlib installed:
 
 gcc junzip_demo.c junzip.c -lz -o junzip
 
+On Windows, MinGW requires -mno-ms-bitfields compilation flags, so you
+may want to use the supplied Makefile and run "make" instead. A simple
+test suite is also available with "make test" (checks struct sizes).
+
 Github: https://github.com/jokkebk/JUnzip
