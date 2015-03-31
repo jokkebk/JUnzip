@@ -145,8 +145,9 @@ int jzReadLocalFileHeader(FILE *zip, JZFileHeader *header,
             return Z_ERRNO;
     }
 
-    if(localHeader.generalPurposeBitFlag)
-        return Z_ERRNO; // Flags not supported
+    // For now, silently ignore bit flags and hope ZLIB can uncompress
+    // if(localHeader.generalPurposeBitFlag)
+    //     return Z_ERRNO; // Flags not supported
 
     if(localHeader.compressionMethod == 0 &&
             (localHeader.compressedSize != localHeader.uncompressedSize))
