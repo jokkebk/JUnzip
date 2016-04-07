@@ -6,6 +6,10 @@
 #ifndef __JUNZIP_H
 #define __JUNZIP_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 #include <stdint.h>
 
 // If you don't have stdint.h, the following two lines should work for most 32/64 bit systems
@@ -102,5 +106,9 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 // Read data from file stream, described by header, to preallocated buffer
 // Return value is zlib coded, e.g. Z_OK, or error code
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer);
+
+#ifdef __cplusplus
+};
+#endif /* __cplusplus */
 
 #endif
