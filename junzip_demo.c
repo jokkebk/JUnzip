@@ -80,7 +80,7 @@ int processFile(JZFile *zip) {
     return 0;
 }
 
-int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename) {
+int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename, void *user_data) {
     long offset;
 
     offset = zip->tell(zip); // store current position
@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
         goto endClose;
     }
 
-    if(jzReadCentralDirectory(zip, &endRecord, recordCallback)) {
+    if(jzReadCentralDirectory(zip, &endRecord, recordCallback, NULL)) {
         printf("Couldn't read ZIP file central record.");
         goto endClose;
     }

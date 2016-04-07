@@ -62,7 +62,7 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
 
 // Read ZIP file global directory. Will move within file.
 int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
-        JZRecordCallback callback) {
+        JZRecordCallback callback, void *user_data) {
     JZGlobalFileHeader fileHeader;
     JZFileHeader header;
     int i;
@@ -107,7 +107,7 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         memcpy(&header, &fileHeader.compressionMethod, sizeof(header));
         header.offset = fileHeader.relativeOffsetOflocalHeader;
 
-        if(!callback(zip, i, &header, (char *)jzBuffer))
+        if(!callback(zip, i, &header, (char *)jzBuffer, user_data))
             break; // end if callback returns zero
     }
 
