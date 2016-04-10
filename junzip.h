@@ -6,11 +6,28 @@
 #ifndef __JUNZIP_H
 #define __JUNZIP_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 #include <stdint.h>
 
 // If you don't have stdint.h, the following two lines should work for most 32/64 bit systems
 // typedef unsigned int uint32_t;
 // typedef unsigned short uint16_t;
+
+typedef struct JZFile JZFile;
+
+struct JZFile {
+    size_t (*read)(JZFile *file, void *buf, size_t size);
+    size_t (*tell)(JZFile *file);
+    int (*seek)(JZFile *file, size_t offset, int whence);
+    int (*error)(JZFile *file);
+    void (*close)(JZFile *file);
+};
+
+JZFile *
+jzfile_from_stdio_file(FILE *fp);
 
 typedef struct __attribute__ ((__packed__)) {
     uint32_t signature;
@@ -69,25 +86,29 @@ typedef struct __attribute__ ((__packed__)) {
 } JZEndRecord;
 
 // Callback prototype for central and local file record reading functions
-typedef int (*JZRecordCallback)(FILE *zip, int index, JZFileHeader *header,
-        char *filename);
+typedef int (*JZRecordCallback)(JZFile *zip, int index, JZFileHeader *header,
+        char *filename, void *user_data);
 
 #define JZ_BUFFER_SIZE 65536
 
 // Read ZIP file end record. Will move within file.
-int jzReadEndRecord(FILE *zip, JZEndRecord *endRecord);
+int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord);
 
 // Read ZIP file global directory. Will move within file.
 // Callback is called for each record, until callback returns zero
-int jzReadCentralDirectory(FILE *zip, JZEndRecord *endRecord,
-        JZRecordCallback callback);
+int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
+        JZRecordCallback callback, void *user_data);
 
 // Read local ZIP file header. Silent on errors so optimistic reading possible.
-int jzReadLocalFileHeader(FILE *zip, JZFileHeader *header,
+int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
         char *filename, int len);
 
 // Read data from file stream, described by header, to preallocated buffer
 // Return value is zlib coded, e.g. Z_OK, or error code
-int jzReadData(FILE *zip, JZFileHeader *header, void *buffer);
+int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer);
+
+#ifdef __cplusplus
+};
+#endif /* __cplusplus */
 
 #endif

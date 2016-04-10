@@ -50,7 +50,7 @@ void writeFile(char *filename, void *data, long bytes) {
     }
 }
 
-int processFile(FILE *zip) {
+int processFile(JZFile *zip) {
     JZFileHeader header;
     char filename[1024];
     unsigned char *data;
@@ -80,44 +80,48 @@ int processFile(FILE *zip) {
     return 0;
 }
 
-int recordCallback(FILE *zip, int idx, JZFileHeader *header, char *filename) {
+int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename, void *user_data) {
     long offset;
 
-    offset = ftell(zip); // store current position
+    offset = zip->tell(zip); // store current position
 
-    if(fseek(zip, header->offset, SEEK_SET)) {
+    if(zip->seek(zip, header->offset, SEEK_SET)) {
         printf("Cannot seek in zip file!");
         return 0; // abort
     }
 
     processFile(zip); // alters file offset
 
-    fseek(zip, offset, SEEK_SET); // return to position
+    zip->seek(zip, offset, SEEK_SET); // return to position
 
     return 1; // continue
 }
 
 int main(int argc, char *argv[]) {
-    FILE *zip;
+    FILE *fp;
     int retval = -1;
     JZEndRecord endRecord;
+
+    JZFile *zip;
 
     if(argc < 2) {
         puts("Usage: junzip_demo file.zip");
         return -1;
     }
 
-    if(!(zip = fopen(argv[1], "rb"))) {
+    if(!(fp = fopen(argv[1], "rb"))) {
         printf("Couldn't open \"%s\"!", argv[1]);
         return -1;
     }
+
+    zip = jzfile_from_stdio_file(fp);
 
     if(jzReadEndRecord(zip, &endRecord)) {
         printf("Couldn't read ZIP file end record.");
         goto endClose;
     }
 
-    if(jzReadCentralDirectory(zip, &endRecord, recordCallback)) {
+    if(jzReadCentralDirectory(zip, &endRecord, recordCallback, NULL)) {
         printf("Couldn't read ZIP file central record.");
         goto endClose;
     }
@@ -128,7 +132,7 @@ int main(int argc, char *argv[]) {
     retval = 0;
 
 endClose:
-    fclose(zip);
+    zip->close(zip);
 
     return retval;
 }
