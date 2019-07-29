@@ -113,43 +113,52 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
 }
 
 // Read local ZIP file header. Silent on errors so optimistic reading possible.
-int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
+int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len) {
-    JZLocalFileHeader localHeader;
 
-    if(zip->read(zip, &localHeader, sizeof(JZLocalFileHeader)) <
+    if(zip->read(zip, header, sizeof(JZLocalFileHeader)) <
             sizeof(JZLocalFileHeader))
         return Z_ERRNO;
 
-    if(localHeader.signature != 0x04034B50)
+    if(header->signature != 0x04034B50)
         return Z_ERRNO;
 
     if(len) { // read filename
-        if(localHeader.fileNameLength >= len)
+        if(header->fileNameLength >= len)
             return Z_ERRNO; // filename cannot fit
 
-        if(zip->read(zip, filename, localHeader.fileNameLength) <
-                localHeader.fileNameLength)
+        if(zip->read(zip, filename, header->fileNameLength) <
+                header->fileNameLength)
             return Z_ERRNO; // read fail
 
-        filename[localHeader.fileNameLength] = '\0'; // NULL terminate
+        filename[header->fileNameLength] = '\0'; // NULL terminate
     } else { // skip filename
-        if(zip->seek(zip, localHeader.fileNameLength, SEEK_CUR))
+        if(zip->seek(zip, header->fileNameLength, SEEK_CUR))
             return Z_ERRNO;
     }
 
-    if(localHeader.extraFieldLength) {
-        if(zip->seek(zip, localHeader.extraFieldLength, SEEK_CUR))
+    if(header->extraFieldLength) {
+        if(zip->seek(zip, header->extraFieldLength, SEEK_CUR))
             return Z_ERRNO;
     }
 
     // For now, silently ignore bit flags and hope ZLIB can uncompress
-    // if(localHeader.generalPurposeBitFlag)
+    // if(header->generalPurposeBitFlag)
     //     return Z_ERRNO; // Flags not supported
 
-    if(localHeader.compressionMethod == 0 &&
-            (localHeader.compressedSize != localHeader.uncompressedSize))
+    if(header->compressionMethod == 0 &&
+            (header->compressedSize != header->uncompressedSize))
         return Z_ERRNO; // Method is "store" but sizes indicate otherwise, abort
+
+    return Z_OK;
+}
+
+int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
+        char *filename, int len) {
+    JZLocalFileHeader localHeader;
+
+    if(jzReadLocalFileHeaderRaw(zip, &localHeader, filename, len) != Z_OK)
+        return Z_ERRNO;
 
     memcpy(header, &localHeader.compressionMethod, sizeof(JZFileHeader));
     header->offset = 0; // not used in local context

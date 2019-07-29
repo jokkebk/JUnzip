@@ -25,6 +25,14 @@ extern "C" {
 // typedef unsigned int uint32_t;
 // typedef unsigned short uint16_t;
 
+#define JZHOUR(t) ((t)>>11)
+#define JZMINUTE(t) (((t)>>5) & 63)
+#define JZSECOND(t) (((t) & 31) * 2)
+
+#define JZYEAR(t) (((t)>>9) + 1980)
+#define JZMONTH(t) (((t)>>5) & 15)
+#define JZDAY(t) ((t) & 31)
+
 typedef struct JZFile JZFile;
 
 struct JZFile {
@@ -110,6 +118,10 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
 
 // Read local ZIP file header. Silent on errors so optimistic reading possible.
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
+        char *filename, int len);
+
+// Same as above but returns the full raw header
+int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
 
 // Read data from file stream, described by header, to preallocated buffer
