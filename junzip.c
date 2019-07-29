@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <zlib.h>
-
 #include "junzip.h"
 
 unsigned char jzBuffer[JZ_BUFFER_SIZE]; // limits maximum zip descriptor size
@@ -163,13 +161,16 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
     unsigned char *bytes = (unsigned char *)buffer; // cast
     long compressedLeft, uncompressedLeft;
+#ifndef NOZLIB
     z_stream strm;
+#endif
     int ret;
 
     if(header->compressionMethod == 0) { // Store - just read it
         if(zip->read(zip, buffer, header->uncompressedSize) <
                 header->uncompressedSize || zip->error(zip))
             return Z_ERRNO;
+#ifndef NOZLIB
     } else if(header->compressionMethod == 8) { // Deflate - using zlib
         strm.zalloc = Z_NULL;
         strm.zfree = Z_NULL;
@@ -220,6 +221,7 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         }
 
         inflateEnd(&strm);
+#endif
     } else {
         return Z_ERRNO;
     }

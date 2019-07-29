@@ -4,8 +4,6 @@
 #include <stdio.h>
 #include <assert.h>
 
-#include <zlib.h>
-
 #include "junzip.h"
 
 int main() {

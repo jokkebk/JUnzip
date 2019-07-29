@@ -4,8 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <zlib.h>
-
 #include "junzip.h"
 
 // Replace this with a function that creates the directory if necessary
