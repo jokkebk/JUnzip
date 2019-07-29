@@ -1,6 +1,6 @@
 CC=gcc
 LIBS = -lz
-OBJECTS=junzip_test.o junzip_demo.o junzip.o
+OBJECTS=junzip_test.o junzip_demo.o junzip_dump.o junzip.o jzip_store.o
 
 ifeq ($(OS),Windows_NT)
 	# MinGW gcc requires disabling MS bitfields
@@ -8,11 +8,13 @@ ifeq ($(OS),Windows_NT)
 	DEMO=junzip_demo.exe
 	TEST=junzip_test.exe
 	DUMP=junzip_dump.exe
+	STORE=jzip_store.exe
 else
 	CFLAGS=-Wall
 	DEMO=junzip_demo
 	TEST=junzip_test
 	DUMP=junzip_dump
+	STORE=jzip_store
 endif
 
 all: $(DEMO)
@@ -22,8 +24,11 @@ run: $(DEMO)
 	
 test: $(TEST)
 	./$^
-	
+
 dump: $(DUMP)
+	./$^
+
+store: $(STORE)
 	./$^
 
 clean:
@@ -36,6 +41,9 @@ $(TEST): junzip.o junzip_test.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
 $(DUMP): junzip.o junzip_dump.o
+	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
+
+$(STORE): junzip.o jzip_store.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
 %.o: %.c
