@@ -7,10 +7,12 @@ ifeq ($(OS),Windows_NT)
 	CFLAGS=-Wall -mno-ms-bitfields
 	DEMO=junzip_demo.exe
 	TEST=junzip_test.exe
+	DUMP=junzip_dump.exe
 else
 	CFLAGS=-Wall
 	DEMO=junzip_demo
 	TEST=junzip_test
+	DUMP=junzip_dump
 endif
 
 all: $(DEMO)
@@ -20,6 +22,9 @@ run: $(DEMO)
 	
 test: $(TEST)
 	./$^
+	
+dump: $(DUMP)
+	./$^
 
 clean:
 	$(RM) *.o $(DEMO) $(TEST)
@@ -28,6 +33,9 @@ $(DEMO): junzip.o junzip_demo.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
 $(TEST): junzip.o junzip_test.o
+	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
+
+$(DUMP): junzip.o junzip_dump.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
 %.o: %.c
