@@ -28,10 +28,12 @@ extern "C" {
 #define JZHOUR(t) ((t)>>11)
 #define JZMINUTE(t) (((t)>>5) & 63)
 #define JZSECOND(t) (((t) & 31) * 2)
+#define JZTIME(h,m,s) (((h)<<11) + ((m)<<5) + (s)/2)
 
 #define JZYEAR(t) (((t)>>9) + 1980)
 #define JZMONTH(t) (((t)>>5) & 15)
 #define JZDAY(t) ((t) & 31)
+#define JZDATE(y,m,d) ((((y)-1980)<<9) + ((m)<<5) + (d))
 
 typedef struct JZFile JZFile;
 
@@ -47,7 +49,7 @@ JZFile *
 jzfile_from_stdio_file(FILE *fp);
 
 typedef struct __attribute__ ((__packed__)) {
-    uint32_t signature;
+    uint32_t signature; // 0x04034B50
     uint16_t versionNeededToExtract; // unsupported
     uint16_t generalPurposeBitFlag; // unsupported
     uint16_t compressionMethod;
@@ -61,7 +63,7 @@ typedef struct __attribute__ ((__packed__)) {
 } JZLocalFileHeader;
 
 typedef struct __attribute__ ((__packed__)) {
-    uint32_t signature;
+    uint32_t signature; // 0x02014B50
     uint16_t versionMadeBy; // unsupported
     uint16_t versionNeededToExtract; // unsupported
     uint16_t generalPurposeBitFlag; // unsupported

@@ -1,5 +1,5 @@
-// Basic tests for JUnzip library. Needs zlib. Should compile with
-// something like gcc junzip_test.c junzip.c -lz -o junzip_test.exe
+// Simple naive ZIP dump utility useful for debugging zips. Should compile with
+// something like gcc junzip_dump.c junzip.c -o junzip_dump.exe
 
 #include <stdio.h>
 #include <assert.h>
