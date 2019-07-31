@@ -13,22 +13,28 @@
 
 #include "junzip.h"
 
+#ifndef HAVE_ZLIB
+// Use Björn's simple crc32 routines if no zlib version available
 uint32_t crc32_for_byte(uint32_t r) {
     for(int j = 0; j < 8; ++j)
         r = (r & 1? 0: (uint32_t)0xEDB88320L) ^ r >> 1;
     return r ^ (uint32_t)0xFF000000L;
 }
 
-void crc32(const void *data, size_t n_bytes, uint32_t* crc) {
+// Modified function to be compatible with Zlib-provided version
+uint32_t crc32(uint32_t crc, const void *data, size_t n_bytes) {
     static uint32_t table[256];
     if(!*table) for(size_t i = 0; i < 0x100; ++i) table[i] = crc32_for_byte(i);
     for(size_t i = 0; i < n_bytes; ++i)
-        *crc = table[(uint8_t)*crc ^ ((uint8_t*)data)[i]] ^ *crc >> 8;
+        crc = table[(uint8_t)crc ^ ((uint8_t*)data)[i]] ^ crc >> 8;
+
+    return crc;
 }
+#endif
 
 int main(int argc, char *argv[]) {
     FILE *in, *out;
-    char buf[1<<15];
+    unsigned char buf[1<<15];
     int files = 0, i; // actual files and argv indices of them
     char **filenames;
 
@@ -65,7 +71,9 @@ int main(int argc, char *argv[]) {
         }
 
         while(!feof(in) && !ferror(in))
-            crc32(buf, fread(buf, 1, sizeof(buf), in), &header.crc32);
+            header.crc32 = crc32(header.crc32, buf, fread(buf, 1, sizeof(buf), in));
+        printf("CRC of %s was %08X\n", filenames[files], header.crc32);
+
         if(ferror(in)) {
             puts("Error while calculating CRC, skipping store.");
         } else {
@@ -89,8 +97,7 @@ int main(int argc, char *argv[]) {
                     timeinfo->tm_mon+1,
                     timeinfo->tm_mday);
             gf->crc32 = header.crc32;
-            gf->compressedSize = header.compressedSize =
-                gf->uncompressedSize = header.uncompressedSize = ftell(in);
+            gf->uncompressedSize = header.uncompressedSize = ftell(in);
             gf->fileNameLength = header.fileNameLength = strlen(filenames[files]);
             gf->extraFieldLength = header.extraFieldLength = 0;
             gf->fileCommentLength = 0;
@@ -99,6 +106,31 @@ int main(int argc, char *argv[]) {
             gf->externalFileAttributes = 0x20; // whatever this is
             gf->relativeOffsetOflocalHeader = ftell(out);
 
+#ifdef HAVE_ZLIB
+            puts("Compiled with Zlib, compressing...");
+            // Instead of nice 40 lines of code initializing zlib stream
+            // version, we'll just blindly read whole file and and use
+            // compress(). This means it won't handle GB files well. See
+            // actual Zlib examples for nicer way to do this in pieces.
+            // For really uncompressible files, we reserve a bit extra
+            unsigned long compSize = compressBound(header.uncompressedSize),
+                dataSize = header.uncompressedSize;
+            unsigned char *comp = (unsigned char *)malloc(compSize),
+                          *data = (unsigned char *)malloc(dataSize);
+
+            fseek(in, 0, SEEK_SET); // rewind
+            size_t bytes = fread(data, 1, dataSize, in);
+            if(bytes != dataSize) {
+                printf("Failed to read file in full (%d vs. %ld bytes)",
+                        bytes, dataSize);
+            }
+            compress(comp, &compSize, data, dataSize);
+            printf("Compressed from %ld to %ld bytes\n", dataSize, compSize);
+            gf->compressedSize = header.compressedSize = compSize;
+#else
+            gf->compressedSize = header.compressedSize = ftell(in);
+#endif
+
             printf("[%08X] ", (int)ftell(out));
             printf("Writing local header for %s\n", filenames[files]);
             fwrite(&header, 1, sizeof(header), out);
@@ -106,11 +138,15 @@ int main(int argc, char *argv[]) {
             printf("Writing filename\n");
             fwrite(filenames[files], 1, strlen(filenames[files]), out);
 
+#ifdef HAVE_ZLIB
+            fwrite(comp, compSize, 1, out);
+#else
             fseek(in, 0, SEEK_SET); // rewind
             while(!feof(in) && !ferror(in)) {
                 size_t bytes = fread(buf, 1, sizeof(buf), in);
                 fwrite(buf, 1, bytes, out);
             }
+#endif
 
             files++;
         }
