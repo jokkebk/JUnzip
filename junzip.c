@@ -230,6 +230,20 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         }
 
         inflateEnd(&strm);
+#else
+#ifdef HAVE_PUFF
+    } else if(header->compressionMethod == 8) { // Deflate - using puff()
+        puts("Trying with puff()");
+        unsigned long destlen = header->uncompressedSize,
+                      sourcelen = header->compressedSize;
+        unsigned char *comp = (unsigned char *)malloc(sourcelen);
+        if(comp == NULL) return Z_ERRNO; // couldn't allocate
+        unsigned long read = zip->read(zip, comp, sourcelen);
+        if(read != sourcelen) return Z_ERRNO; // TODO: more robust read loop
+        int ret = puff((unsigned char *)buffer, &destlen, comp, &sourcelen);
+        printf("Puff returned %d\n", ret);
+        free(comp);
+#endif // HAVE_PUFF
 #endif
     } else {
         return Z_ERRNO;
