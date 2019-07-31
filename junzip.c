@@ -168,7 +168,7 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 
 // Read data from file stream, described by header, to preallocated buffer
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
-#ifndef NOZLIB
+#ifdef HAVE_ZLIB
     unsigned char *bytes = (unsigned char *)buffer; // cast
     long compressedLeft, uncompressedLeft;
     int ret;
@@ -179,7 +179,7 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         if(zip->read(zip, buffer, header->uncompressedSize) <
                 header->uncompressedSize || zip->error(zip))
             return Z_ERRNO;
-#ifndef NOZLIB
+#ifdef HAVE_ZLIB
     } else if(header->compressionMethod == 8) { // Deflate - using zlib
         strm.zalloc = Z_NULL;
         strm.zfree = Z_NULL;

@@ -13,18 +13,28 @@ The codebase is very lean and should be easy to understand, and port to
 any system. Compiling the example on most systems with zlib installed:
 
 ```
-gcc junzip_demo.c junzip.c -lz -o junzip
+gcc -DHAVE_ZLIB junzip_demo.c junzip.c -lz -o junzip
 ```
 
-You can also compile a "no compression" version with `-DNOZLIB`, or use `clang`:
+You can also compile a "no compression" version without `-DHAVE_ZLIB` and
+`-lz`, and use `clang` as well:
 
 ```
-clang -DNOZLIB jzip_store.c junzip.c -o jzip_store
+clang jzip_store.c junzip.c -o jzip_store
 ```
 
 On Windows, MinGW requires `-mno-ms-bitfields` compilation flags, so you
-may want to use the supplied Makefile and run `make` instead. A simple
-test suite is also available with `make test` (checks struct sizes).
-A small `make_clang.bat` is also provided just for laughs.
+may want to use the supplied Makefile and run `make` instead
+(`make HAVE_ZLIB=1` if you want compression support). A
+small `make_clang.bat` is also provided just for laughs.
+Included executables:
+
+* `junzip_demo file.zip` unzips the `file.zip`
+* `junzip_dump file.zip` dumps the headers in `file.zip`
+* `junzip_test` checks if structures are the right size
+* `jzip_store file1 file2 output.zip` creates a zip file (will silently
+overwrite last parameter so be VERY careful!)
+
+
 
 Github: https://github.com/jokkebk/JUnzip
