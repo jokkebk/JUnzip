@@ -1,16 +1,18 @@
 CC=gcc
-LIBS = -lz
+# If you want compression support, uncomment LIBS and comment DEFS below
+#LIBS = -lz
+DEFS = -DNOZLIB
 OBJECTS=junzip_test.o junzip_demo.o junzip_dump.o junzip.o jzip_store.o
 
 ifeq ($(OS),Windows_NT)
 	# MinGW gcc requires disabling MS bitfields
-	CFLAGS=-Wall -mno-ms-bitfields
+	CFLAGS=-Wall -mno-ms-bitfields $(DEFS)
 	DEMO=junzip_demo.exe
 	TEST=junzip_test.exe
 	DUMP=junzip_dump.exe
 	STORE=jzip_store.exe
 else
-	CFLAGS=-Wall
+	CFLAGS=-Wall $(DEFS)
 	DEMO=junzip_demo
 	TEST=junzip_test
 	DUMP=junzip_dump

@@ -168,12 +168,12 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 
 // Read data from file stream, described by header, to preallocated buffer
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
+#ifndef NOZLIB
     unsigned char *bytes = (unsigned char *)buffer; // cast
     long compressedLeft, uncompressedLeft;
-#ifndef NOZLIB
+    int ret;
     z_stream strm;
 #endif
-    int ret;
 
     if(header->compressionMethod == 0) { // Store - just read it
         if(zip->read(zip, buffer, header->uncompressedSize) <

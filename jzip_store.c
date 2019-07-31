@@ -28,7 +28,6 @@ void crc32(const void *data, size_t n_bytes, uint32_t* crc) {
 
 int main(int argc, char *argv[]) {
     FILE *in, *out;
-    uint32_t *crc;
     char buf[1<<15];
     int files = 0, i; // actual files and argv indices of them
     char **filenames;
