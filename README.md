@@ -9,7 +9,7 @@ For details about this project, see:
 
 http://codeandlife.com/2014/01/01/unzip-library-for-c/
 
-!Compiling
+# Compiling
 
 The codebase is very lean and should be easy to understand, and port to
 any system. Compiling the example on most systems with zlib installed:
@@ -33,7 +33,7 @@ dependencies and use `clang` as well as `gcc`:
 clang jzip_store.c junzip.c -o jzip_store
 ```
 
-!Makefile
+# Makefile
 
 On Windows, MinGW requires `-mno-ms-bitfields` compilation flags, so you
 may want to use the supplied Makefile and build the `junzip_demo` and other
@@ -60,7 +60,7 @@ make HAVE_PUFF=1
 
 A small `make_clang.bat` is also provided just for laughs.
 
-!Included executables
+# Included executables
 
 * `junzip_demo file.zip` unzips the `file.zip`
 * `junzip_dump file.zip` dumps the headers in `file.zip`
