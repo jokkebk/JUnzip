@@ -30,7 +30,7 @@ You can also compile a "no compression" version without either above
 dependencies and use `clang` as well as `gcc`:
 
 ```
-clang jzip_store.c junzip.c -o jzip_store
+clang junzip_demo.c junzip.c -o junzip_demo
 ```
 
 # Makefile
