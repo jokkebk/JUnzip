@@ -23,7 +23,7 @@ Mark Adler (part of zlib contrib suite) is included and you can include it
 instead of zlib:
 
 ```
-gcc -DHAVE_PUFF junzip_demo.c junzip.c puff.c -lz -o junzip_demo
+gcc -DHAVE_PUFF junzip_demo.c junzip.c puff.c -o junzip_demo
 ```
 
 You can also compile a "no compression" version without either above
