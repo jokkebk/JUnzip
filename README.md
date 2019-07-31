@@ -1,8 +1,8 @@
 JUnzip
 ======
 
-Minimalistic unzip library released into public domain. There is now
-also simple demo for creating a zip file without compression.
+Minimalistic zip/unzip library released into public domain. There is now
+also simple demo for creating a zip file with or without compression!
 
 Written by Joonas Pihlajamaa (firstname.lastname@iki.fi). 
 For details about this project, see:
@@ -44,15 +44,14 @@ make
 ```
 
 You can make the zlib-enabled versions easily as well to get fast
-decompression:
+decompression and compression support to `jzip_demo` (not just store):
 
 ```
 make HAVE_ZLIB=1
 ```
 
 Or the lighter but bit slower `puff.c` powered decompression without the
-zlib dependency:
-decompression
+zlib dependency (and no compression, just store in `jzip_demo`):
 
 ```
 make HAVE_PUFF=1
@@ -62,10 +61,13 @@ A small `make_clang.bat` is also provided just for laughs.
 
 # Included executables
 
+*Warning*, both the `jzip_demo` and `junzip_demo` WILL overwrite files silently!
+Zip demo assumes last parameter is the target and overwrites that file, and
+unzip demo overwrites any files already within the directory with contents of the zip. Be careful!
+
 * `junzip_demo file.zip` unzips the `file.zip`
+* `jzip_demo file1 file2 output.zip` creates a zip file
 * `junzip_dump file.zip` dumps the headers in `file.zip`
 * `junzip_test` checks if structures are the right size
-* `jzip_store file1 file2 output.zip` creates a zip file (will silently
-overwrite last parameter so be VERY careful!)
 
 Github: https://github.com/jokkebk/JUnzip

@@ -118,11 +118,21 @@ int main(int argc, char *argv[]) {
             unsigned char *comp = (unsigned char *)malloc(compSize),
                           *data = (unsigned char *)malloc(dataSize);
 
+            if(comp == NULL) {
+                puts("Couldn't allocate buffer for compressed data");
+                return -1; // TODO: Graceful exit with free, fclose, fclose, etc.
+            }
+            if(data == NULL) {
+                puts("Couldn't allocate buffer for uncompressed data");
+                return -1; // TODO: Graceful exit with free, fclose, fclose, etc.
+            }
+
             fseek(in, 0, SEEK_SET); // rewind
             size_t bytes = fread(data, 1, dataSize, in);
             if(bytes != dataSize) {
                 printf("Failed to read file in full (%d vs. %ld bytes)",
                         bytes, dataSize);
+                return -1;
             }
             compress(comp, &compSize, data, dataSize);
             printf("Compressed from %ld to %ld bytes\n", dataSize, compSize);
@@ -140,8 +150,11 @@ int main(int argc, char *argv[]) {
 
 #ifdef HAVE_ZLIB
             fwrite(comp, compSize, 1, out);
+            free(comp);
+            free(data);
 #else
-            fseek(in, 0, SEEK_SET); // rewind
+            // The plain store version makes do with a smaller buffer
+            fseek(in, 0, SEEK_SET); // rewind input file
             while(!feof(in) && !ferror(in)) {
                 size_t bytes = fread(buf, 1, sizeof(buf), in);
                 fwrite(buf, 1, bytes, out);

@@ -19,8 +19,8 @@ else
 endif
 
 CC=gcc
-OBJECTS=junzip_test.o junzip_demo.o junzip_dump.o junzip.o jzip_store.o $(LIBS)
-COMMANDS=junzip_demo junzip_test junzip_dump jzip_store
+OBJECTS=junzip_test.o junzip_demo.o junzip_dump.o junzip.o jzip_demo.o $(LIBS)
+COMMANDS=junzip_demo junzip_test junzip_dump jzip_demo
 
 all: $(COMMANDS)
 
@@ -30,7 +30,7 @@ clean:
 junzip_demo: junzip.o junzip_demo.o $(LIBS)
 junzip_dump: junzip.o junzip_dump.o $(LIBS)
 junzip_test: junzip.o junzip_test.o $(LIBS)
-jzip_store: junzip.o jzip_store.o $(LIBS)
+jzip_demo: junzip.o jzip_demo.o $(LIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

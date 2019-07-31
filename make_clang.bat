@@ -1,11 +1,13 @@
-@echo off
+@SET CC=clang
 
-rem This is an example on compiling with Clang under Windows.
-rem If you are using Linux, you SHOULD know enough to adapt. :)
+@REM This is an example on compiling with Clang under Windows.
+@REM If you are using Linux, you SHOULD know enough to adapt. :)
 
-rem For compression support, you can add "-DHAVE_ZLIB -lz" to lines below.
+@REM Uncomment one of the below options if you want (de)compression support
+@REM SET LIB=-DHAVE_PUFF puff.c
+@REM SET LIB=-DHAVE_ZLIB -I..\zlib -L..\zlib -lz THIS DOESN'T PROBABLY WORK
 
-clang junzip.c junzip_demo.c -o junzip_demo.exe
-clang junzip.c junzip_test.c -o junzip_test.exe
-clang junzip.c junzip_dump.c -o junzip_dump.exe
-clang junzip.c jzip_store.c -o jzip_store.exe
+%CC% %LIB% junzip.c junzip_demo.c -o junzip_demo.exe
+%CC% %LIB% junzip.c junzip_test.c -o junzip_test.exe
+%CC% %LIB% junzip.c junzip_dump.c -o junzip_dump.exe
+%CC% %LIB% junzip.c jzip_demo.c -o jzip_demo.exe
