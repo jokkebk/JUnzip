@@ -6,9 +6,9 @@ ifdef HAVE_ZLIB
 endif
 
 # Use "make HAVE_LIBS=1" to use compact puff() by Mark Adler for decompression
-ifdef HAVE_LIBS
+ifdef HAVE_PUFF
 	LIBS = puff.o
-	DEFS = -DHAVE_LIBS
+	DEFS = -DHAVE_PUFF
 endif
 
 ifeq ($(OS),Windows_NT)
