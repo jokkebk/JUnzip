@@ -6,14 +6,27 @@
 
 #include "junzip.h"
 
-// Replace this with a function that creates the directory if necessary
-// and returns 1 if you want directory support
+#include <errno.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(d) _mkdir(d)
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#define MKDIR(d) mkdir((d), 0755)
+#endif
+
+// Create the directory if necessary; return 1 on success/existing
 int makeDirectory(char *dir) {
-    printf("mkdir(%s)\n", dir);
+    if(MKDIR(dir) == 0)
+        return 1; // created ok
+
+    if(errno == EEXIST)
+        return 1; // already there
+
+    fprintf(stderr, "Couldn't create %s (%d)\n", dir, errno);
     return 0;
-    // For MinGW (requires io.h)
-    //mkdir(dir);
-    //return 1;
 }
 
 void writeFile(char *filename, void *data, long bytes) {
