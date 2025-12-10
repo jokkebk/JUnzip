@@ -25,7 +25,7 @@ COMMANDS=junzip_demo junzip_test junzip_dump jzip_demo
 all: $(COMMANDS)
 
 clean:
-	$(RM) *.o $(DEMO) $(TEST)
+	$(RM) *.o $(COMMANDS)
 
 junzip_demo: junzip.o junzip_demo.o $(LIBS)
 junzip_dump: junzip.o junzip_dump.o $(LIBS)

@@ -1,2 +1,5 @@
 *.o
-*.exe
+junzip_demo
+junzip_dump
+junzip_test
+jzip_demo
