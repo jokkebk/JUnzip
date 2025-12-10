@@ -70,4 +70,9 @@ unzip demo overwrites any files already within the directory with contents of th
 * `junzip_dump file.zip` dumps the headers in `file.zip`
 * `junzip_test` checks if structures are the right size
 
+Note: ZIP entries that use the data descriptor flag (general purpose bit 3)
+are supported when sizes are known (e.g., from the central directory). The
+demo keeps central-directory sizes and `jzReadData` consumes the descriptor
+automatically so the file pointer lands on the next entry.
+
 Github: https://github.com/jokkebk/JUnzip

@@ -87,6 +87,8 @@ typedef struct __attribute__ ((__packed__)) {
 } JZGlobalFileHeader;
 
 typedef struct __attribute__ ((__packed__)) {
+    uint16_t versionNeededToExtract;
+    uint16_t generalPurposeBitFlag; // bit 3 indicates data descriptor follows
     uint16_t compressionMethod;
     uint16_t lastModFileTime;
     uint16_t lastModFileDate;

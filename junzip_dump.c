@@ -9,12 +9,10 @@
 int main(int argc, char *argv[]) {
     FILE *fp;
     JZFile *zip;
-    JZLocalFileHeader jzHeader;
     JZGlobalFileHeader jzGlobalHeader;
     JZEndRecord jzEndRecord;
-    char filename[640]; // should be enough for everyone
     long fpos, fsize;
-    int i, files = 0;
+    int i;
 
     if(argc < 2) {
         puts("Usage: junzip_dump file.zip");
@@ -28,53 +26,24 @@ int main(int argc, char *argv[]) {
 
     zip = jzfile_from_stdio_file(fp);
 
-    puts("Reading files...");
+    if(jzReadEndRecord(zip, &jzEndRecord)) {
+        printf("Couldn't read ZIP file end record.\n");
+        goto endClose;
+    }
 
-    do {
-        // Central dir should be where first local header read fails
-        fpos = zip->tell(zip); 
+    puts("Reading central directory and local headers...");
 
-        if(jzReadLocalFileHeaderRaw(zip, &jzHeader, filename, sizeof(filename)) != Z_OK) {
-            puts("Read of local file header failed, assuming file data ended.");
-            break; // next step after the loop will seek back to pos
-        }
+    if(zip->seek(zip, jzEndRecord.centralDirectoryOffset, SEEK_SET)) {
+        fprintf(stderr, "Cannot seek to central directory!\n");
+        goto endClose;
+    }
 
-        printf("[%08X] File \"%s\" found, %d bytes (%d compressed), skipping data...\n",
-                (int)jzEndRecord.centralDirectoryOffset, filename,
-                jzHeader.uncompressedSize, jzHeader.compressedSize);
+    for(i = 0; i < jzEndRecord.numEntries; i++) {
+        long centralPos = zip->tell(zip);
+        JZLocalFileHeader jzHeader;
+        char filename[640]; // should be enough for everyone
 
-        printf("    signature: 0x%08X\n", jzHeader.signature);
-        printf("    versionNeededToExtract: %d\n", jzHeader.versionNeededToExtract);
-        printf("    generalPurposeBitFlag: %d\n", jzHeader.generalPurposeBitFlag);
-        printf("    compressionMethod: %d\n", jzHeader.compressionMethod);
-        printf("    lastModFileTime: 0x%02X (%02d:%02d:%02d)\n", jzHeader.lastModFileTime,
-               JZHOUR(jzHeader.lastModFileTime),
-               JZMINUTE(jzHeader.lastModFileTime),
-               JZSECOND(jzHeader.lastModFileTime));
-        printf("    lastModFileDate: 0x%02X (%04d/%02d/%02d)\n", jzHeader.lastModFileDate,
-               JZYEAR(jzHeader.lastModFileDate),
-               JZMONTH(jzHeader.lastModFileDate),
-               JZDAY(jzHeader.lastModFileDate));
-        printf("    crc32: 0x%08X\n", jzHeader.crc32);
-        printf("    compressedSize: %d\n", jzHeader.compressedSize);
-        printf("    uncompressedSize: %d\n", jzHeader.uncompressedSize);
-        printf("    fileNameLength: %d\n", jzHeader.fileNameLength);
-        printf("    extraFieldLength: %d\n", jzHeader.extraFieldLength);
-
-        zip->seek(zip, jzHeader.compressedSize, SEEK_CUR); // skip data
-        files++;
-    } while(1);
-
-    zip->seek(zip, fpos, SEEK_SET);
-
-    // Below is mainly a copy of jzReadCentralDirectory (with less error recovery),
-    // as its callback is provided a stripped-down JZFileHeader, not
-    // JZGlobalFileHeader and don't want to break backwards compatibility by
-    // altering the functions signature, or work around it painfully just for
-    // this. So enjoy the duplication...
-
-    for(i = 0; i < files; i++) {
-        printf("[%08X] ", (int)zip->tell(zip));
+        printf("[%08X] ", (int)centralPos);
 
         if(zip->read(zip, &jzGlobalHeader, sizeof(JZGlobalFileHeader)) <
                 sizeof(JZGlobalFileHeader)) {
@@ -103,6 +72,45 @@ int main(int argc, char *argv[]) {
         if(zip->seek(zip, jzGlobalHeader.extraFieldLength, SEEK_CUR) ||
                 zip->seek(zip, jzGlobalHeader.fileCommentLength, SEEK_CUR)) {
             fprintf(stderr, "Couldn't skip extra field or file comment %d", i);
+            return Z_ERRNO;
+        }
+
+        // Read the corresponding local header via its relative offset
+        fpos = zip->tell(zip); // store current central dir position
+
+        if(zip->seek(zip, jzGlobalHeader.relativeOffsetOflocalHeader, SEEK_SET)) {
+            fprintf(stderr, "Couldn't seek to local header %d!", i);
+            return Z_ERRNO;
+        }
+
+        if(jzReadLocalFileHeaderRaw(zip, &jzHeader, filename, sizeof(filename)) != Z_OK) {
+            fprintf(stderr, "Couldn't read local header %d!", i);
+            return Z_ERRNO;
+        }
+
+        printf("Local file header for \"%s\" (%d compressed bytes, flag %d)\n",
+                filename, jzHeader.compressedSize, jzHeader.generalPurposeBitFlag);
+        printf("    signature: 0x%08X\n", jzHeader.signature);
+        printf("    versionNeededToExtract: %d\n", jzHeader.versionNeededToExtract);
+        printf("    generalPurposeBitFlag: %d\n", jzHeader.generalPurposeBitFlag);
+        printf("    compressionMethod: %d\n", jzHeader.compressionMethod);
+        printf("    lastModFileTime: 0x%02X (%02d:%02d:%02d)\n", jzHeader.lastModFileTime,
+               JZHOUR(jzHeader.lastModFileTime),
+               JZMINUTE(jzHeader.lastModFileTime),
+               JZSECOND(jzHeader.lastModFileTime));
+        printf("    lastModFileDate: 0x%02X (%04d/%02d/%02d)\n", jzHeader.lastModFileDate,
+               JZYEAR(jzHeader.lastModFileDate),
+               JZMONTH(jzHeader.lastModFileDate),
+               JZDAY(jzHeader.lastModFileDate));
+        printf("    crc32: 0x%08X\n", jzHeader.crc32);
+        printf("    compressedSize: %d\n", jzHeader.compressedSize);
+        printf("    uncompressedSize: %d\n", jzHeader.uncompressedSize);
+        printf("    fileNameLength: %d\n", jzHeader.fileNameLength);
+        printf("    extraFieldLength: %d\n", jzHeader.extraFieldLength);
+
+        // Return to central directory to read next entry
+        if(zip->seek(zip, fpos, SEEK_SET)) {
+            fprintf(stderr, "Couldn't return to central directory %d!", i);
             return Z_ERRNO;
         }
 
@@ -155,6 +163,10 @@ int main(int argc, char *argv[]) {
     printf("    centralDirectorySize: %d\n", jzEndRecord.centralDirectorySize);
     printf("    centralDirectoryOffset: [%08X]\n", jzEndRecord.centralDirectoryOffset);
     printf("    zipCommentLength: %d\n", jzEndRecord.zipCommentLength);
+
+endClose:
+    if(zip)
+        zip->close(zip);
 
     return 0;
 }

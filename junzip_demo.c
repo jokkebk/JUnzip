@@ -48,13 +48,18 @@ void writeFile(char *filename, void *data, long bytes) {
     }
 }
 
-int processFile(JZFile *zip) {
-    JZFileHeader header;
+int processFile(JZFile *zip, JZFileHeader *centralHeader) {
+    JZFileHeader header = *centralHeader; // start with central dir values
     char filename[1024];
     unsigned char *data;
 
     if(jzReadLocalFileHeader(zip, &header, filename, sizeof(filename))) {
         printf("Couldn't read local file header!");
+        return -1;
+    }
+
+    if(header.uncompressedSize == 0) {
+        printf("Unknown uncompressed size for %s, cannot allocate buffer.\n", filename);
         return -1;
     }
 
@@ -88,7 +93,7 @@ int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename, v
         return 0; // abort
     }
 
-    processFile(zip); // alters file offset
+    processFile(zip, header); // alters file offset
 
     zip->seek(zip, offset, SEEK_SET); // return to position
 
@@ -123,9 +128,6 @@ int main(int argc, char *argv[]) {
         printf("Couldn't read ZIP file central record.");
         goto endClose;
     }
-
-    //Alternative method to go through zip after opening it:
-    //while(!processFile(zip)) {}
 
     retval = 0;
 

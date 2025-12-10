@@ -15,8 +15,8 @@ int main() {
     printf("JZGlobalFileHeader: %d vs. 46: ", (int)sizeof(JZGlobalFileHeader));
     if(sizeof(JZGlobalFileHeader) == 46) puts("OK"); else puts("FAILED!");
 
-    printf("JZFileHeader: %d vs. 22: ", (int)sizeof(JZFileHeader));
-    if(sizeof(JZFileHeader) == 22) puts("OK"); else puts("FAILED!");
+    printf("JZFileHeader: %d vs. 26: ", (int)sizeof(JZFileHeader));
+    if(sizeof(JZFileHeader) == 26) puts("OK"); else puts("FAILED!");
 
     printf("JZEndRecord: %d vs. 22: ", (int)sizeof(JZEndRecord));
     if(sizeof(JZEndRecord) == 22) puts("OK"); else puts("FAILED!");

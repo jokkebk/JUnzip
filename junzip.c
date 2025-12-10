@@ -102,7 +102,14 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         }
 
         // Construct JZFileHeader from global file header
-        memcpy(&header, &fileHeader.compressionMethod, sizeof(header));
+        header.versionNeededToExtract = fileHeader.versionNeededToExtract;
+        header.generalPurposeBitFlag = fileHeader.generalPurposeBitFlag;
+        header.compressionMethod = fileHeader.compressionMethod;
+        header.lastModFileTime = fileHeader.lastModFileTime;
+        header.lastModFileDate = fileHeader.lastModFileDate;
+        header.crc32 = fileHeader.crc32;
+        header.compressedSize = fileHeader.compressedSize;
+        header.uncompressedSize = fileHeader.uncompressedSize;
         header.offset = fileHeader.relativeOffsetOflocalHeader;
 
         if(!callback(zip, i, &header, (char *)jzBuffer, user_data))
@@ -160,8 +167,48 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
     if(jzReadLocalFileHeaderRaw(zip, &localHeader, filename, len) != Z_OK)
         return Z_ERRNO;
 
-    memcpy(header, &localHeader.compressionMethod, sizeof(JZFileHeader));
+    header->versionNeededToExtract = localHeader.versionNeededToExtract;
+    header->generalPurposeBitFlag = localHeader.generalPurposeBitFlag;
+    header->compressionMethod = localHeader.compressionMethod;
+    header->lastModFileTime = localHeader.lastModFileTime;
+    header->lastModFileDate = localHeader.lastModFileDate;
+
+    // If the local header leaves sizes/CRC zero (bit 3 set), keep any
+    // existing values already present in header (e.g. from central dir).
+    if(localHeader.crc32)
+        header->crc32 = localHeader.crc32;
+    if(localHeader.compressedSize)
+        header->compressedSize = localHeader.compressedSize;
+    if(localHeader.uncompressedSize)
+        header->uncompressedSize = localHeader.uncompressedSize;
+
     header->offset = 0; // not used in local context
+
+    return Z_OK;
+}
+
+static int jzReadDataDescriptor(JZFile *zip, JZFileHeader *header) {
+    uint32_t sigOrCrc, crc32, compressedSize, uncompressedSize;
+
+    if(zip->read(zip, &sigOrCrc, sizeof(uint32_t)) < sizeof(uint32_t))
+        return Z_ERRNO;
+
+    if(sigOrCrc == 0x08074B50) { // signature present
+        if(zip->read(zip, &crc32, sizeof(uint32_t)) < sizeof(uint32_t))
+            return Z_ERRNO;
+    } else {
+        crc32 = sigOrCrc; // signature absent, first field was CRC
+    }
+
+    if(zip->read(zip, &compressedSize, sizeof(uint32_t)) < sizeof(uint32_t))
+        return Z_ERRNO;
+
+    if(zip->read(zip, &uncompressedSize, sizeof(uint32_t)) < sizeof(uint32_t))
+        return Z_ERRNO;
+
+    header->crc32 = crc32;
+    header->compressedSize = compressedSize;
+    header->uncompressedSize = uncompressedSize;
 
     return Z_OK;
 }
@@ -174,13 +221,22 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
     int ret;
     z_stream strm;
 #endif
+    int hasDataDescriptor = header->generalPurposeBitFlag & 0x08;
 
     if(header->compressionMethod == 0) { // Store - just read it
         if(zip->read(zip, buffer, header->uncompressedSize) <
                 header->uncompressedSize || zip->error(zip))
             return Z_ERRNO;
+
+        if(hasDataDescriptor) {
+            if(jzReadDataDescriptor(zip, header) != Z_OK)
+                return Z_ERRNO;
+        }
 #ifdef HAVE_ZLIB
     } else if(header->compressionMethod == 8) { // Deflate - using zlib
+        if(header->compressedSize == 0 || header->uncompressedSize == 0)
+            return Z_ERRNO; // need sizes, use central directory values
+
         strm.zalloc = Z_NULL;
         strm.zfree = Z_NULL;
         strm.opaque = Z_NULL;
@@ -230,9 +286,17 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         }
 
         inflateEnd(&strm);
+
+        if(hasDataDescriptor) {
+            if(jzReadDataDescriptor(zip, header) != Z_OK)
+                return Z_ERRNO;
+        }
 #else
 #ifdef HAVE_PUFF
     } else if(header->compressionMethod == 8) { // Deflate - using puff()
+        if(header->compressedSize == 0 || header->uncompressedSize == 0)
+            return Z_ERRNO; // need sizes, use central directory values
+
         unsigned long destlen = header->uncompressedSize,
                       sourcelen = header->compressedSize;
         unsigned char *comp = (unsigned char *)malloc(sourcelen);
@@ -242,6 +306,11 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         int ret = puff((unsigned char *)buffer, &destlen, comp, &sourcelen);
         free(comp);
         if(ret) return Z_ERRNO; // something went wrong
+
+        if(hasDataDescriptor) {
+            if(jzReadDataDescriptor(zip, header) != Z_OK)
+                return Z_ERRNO;
+        }
 #endif // HAVE_PUFF
 #endif
     } else {
