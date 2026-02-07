@@ -44,6 +44,10 @@ int main(int argc, char *argv[]) {
     }
 
     out = fopen(argv[argc-1], "wb");
+    if(out == NULL) {
+        printf("Couldn't open \"%s\" for writing!\n", argv[argc-1]);
+        return -1;
+    }
 
     JZGlobalFileHeader *globalHeader = (JZGlobalFileHeader *)calloc((argc-2),
             sizeof(JZGlobalFileHeader));
@@ -60,7 +64,7 @@ int main(int argc, char *argv[]) {
     }
 
     for(int i = 0; i < argc-2; i++) {
-        JZLocalFileHeader header;
+        JZLocalFileHeader header = {0};
         struct stat st;
         struct tm * timeinfo;
 
