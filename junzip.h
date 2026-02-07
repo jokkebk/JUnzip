@@ -132,8 +132,9 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
 
-// Read data from file stream, described by header, to preallocated buffer
-// Return value is zlib coded, e.g. Z_OK, or error code
+// Read data from file stream, described by header, to preallocated buffer.
+// Return value is zlib coded, e.g. Z_OK, or error code.
+// Note: does not verify CRC32 — caller should check header->crc32 if needed.
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer);
 
 #ifdef __cplusplus

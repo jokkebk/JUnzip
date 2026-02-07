@@ -6,7 +6,10 @@
 
 #include "junzip.h"
 
-unsigned char jzBuffer[JZ_BUFFER_SIZE]; // limits maximum zip descriptor size
+// Global shared buffer. Note: this makes the library non-thread-safe and
+// non-reentrant. The filename pointer passed to JZRecordCallback also points
+// into this buffer and is only valid until the next library call.
+unsigned char jzBuffer[JZ_BUFFER_SIZE];
 
 // Read ZIP file end record. Will move within file.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
@@ -35,11 +38,17 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
         return Z_ERRNO;
     }
 
-    // Naively assume signature can only be found in one place...
+    // Scan backwards for end record signature, validating that the candidate
+    // sits at exactly fileSize - sizeof(JZEndRecord) - zipCommentLength.
+    // This rejects false positives from signatures embedded in file data or
+    // ZIP comments.
     for(i = readBytes - sizeof(JZEndRecord); i >= 0; i--) {
         er = (JZEndRecord *)(jzBuffer + i);
-        if(er->signature == 0x06054B50)
-            break;
+        if(er->signature == 0x06054B50) {
+            long candidatePos = fileSize - readBytes + i;
+            if(candidatePos + sizeof(JZEndRecord) + er->zipCommentLength == fileSize)
+                break;
+        }
     }
 
     if(i < 0) {
@@ -218,7 +227,9 @@ static int jzReadDataDescriptor(JZFile *zip, JZFileHeader *header) {
     return Z_OK;
 }
 
-// Read data from file stream, described by header, to preallocated buffer
+// Read data from file stream, described by header, to preallocated buffer.
+// Note: does not verify CRC32 of decompressed data. Caller should validate
+// against header->crc32 if data integrity verification is needed.
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
 #ifdef HAVE_ZLIB
     unsigned char *bytes = (unsigned char *)buffer; // cast
