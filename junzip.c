@@ -222,7 +222,6 @@ static int jzReadDataDescriptor(JZFile *zip, JZFileHeader *header) {
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
 #ifdef HAVE_ZLIB
     unsigned char *bytes = (unsigned char *)buffer; // cast
-    long compressedLeft, uncompressedLeft;
     int ret;
     z_stream strm;
 #endif
@@ -242,55 +241,37 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         if(header->compressedSize == 0 || header->uncompressedSize == 0)
             return Z_ERRNO; // need sizes, use central directory values
 
+        // Read all compressed data into a single buffer
+        unsigned char *comp = (unsigned char *)malloc(header->compressedSize);
+        if(comp == NULL) return Z_ERRNO;
+
+        if(zip->read(zip, comp, header->compressedSize) <
+                header->compressedSize || zip->error(zip)) {
+            free(comp);
+            return Z_ERRNO;
+        }
+
         strm.zalloc = Z_NULL;
         strm.zfree = Z_NULL;
         strm.opaque = Z_NULL;
-
-        strm.avail_in = 0;
-        strm.next_in = Z_NULL;
+        strm.avail_in = header->compressedSize;
+        strm.next_in = comp;
 
         // Use inflateInit2 with negative window bits to indicate raw data
-        if((ret = inflateInit2(&strm, -MAX_WBITS)) != Z_OK)
-            return ret; // Zlib errors are negative
-
-        // Inflate compressed data
-        for(compressedLeft = header->compressedSize,
-                uncompressedLeft = header->uncompressedSize;
-                compressedLeft && uncompressedLeft && ret != Z_STREAM_END;
-                compressedLeft -= strm.avail_in) {
-            // Read next chunk
-            strm.avail_in = zip->read(zip, jzBuffer,
-                    (sizeof(jzBuffer) < compressedLeft) ?
-                    sizeof(jzBuffer) : compressedLeft);
-
-            if(strm.avail_in == 0 || zip->error(zip)) {
-                inflateEnd(&strm);
-                return Z_ERRNO;
-            }
-
-            strm.next_in = jzBuffer;
-            strm.avail_out = uncompressedLeft;
-            strm.next_out = bytes;
-
-            compressedLeft -= strm.avail_in; // inflate will change avail_in
-
-            ret = inflate(&strm, Z_NO_FLUSH);
-
-            if(ret == Z_STREAM_ERROR) return ret; // shouldn't happen
-
-            switch (ret) {
-                case Z_NEED_DICT:
-                    ret = Z_DATA_ERROR;     /* and fall through */
-                case Z_DATA_ERROR: case Z_MEM_ERROR:
-                    (void)inflateEnd(&strm);
-                    return ret;
-            }
-
-            bytes += uncompressedLeft - strm.avail_out; // bytes uncompressed
-            uncompressedLeft = strm.avail_out;
+        if((ret = inflateInit2(&strm, -MAX_WBITS)) != Z_OK) {
+            free(comp);
+            return ret;
         }
 
+        strm.avail_out = header->uncompressedSize;
+        strm.next_out = bytes;
+
+        ret = inflate(&strm, Z_FINISH);
         inflateEnd(&strm);
+        free(comp);
+
+        if(ret != Z_STREAM_END)
+            return (ret == Z_OK) ? Z_ERRNO : ret;
 
         if(hasDataDescriptor) {
             if(jzReadDataDescriptor(zip, header) != Z_OK)
