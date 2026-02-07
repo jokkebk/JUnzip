@@ -55,6 +55,11 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
         return Z_ERRNO;
     }
 
+    if(endRecord->centralDirectoryOffset + endRecord->centralDirectorySize > fileSize) {
+        fprintf(stderr, "Central directory offset/size exceeds file size!");
+        return Z_ERRNO;
+    }
+
     return Z_OK;
 }
 
@@ -302,7 +307,7 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
         unsigned char *comp = (unsigned char *)malloc(sourcelen);
         if(comp == NULL) return Z_ERRNO; // couldn't allocate
         unsigned long read = zip->read(zip, comp, sourcelen);
-        if(read != sourcelen) return Z_ERRNO; // TODO: more robust read loop
+        if(read != sourcelen) { free(comp); return Z_ERRNO; }
         int ret = puff((unsigned char *)buffer, &destlen, comp, &sourcelen);
         free(comp);
         if(ret) return Z_ERRNO; // something went wrong
@@ -366,6 +371,8 @@ JZFile *
 jzfile_from_stdio_file(FILE *fp)
 {
     StdioJZFile *handle = (StdioJZFile *)malloc(sizeof(StdioJZFile));
+
+    if(handle == NULL) return NULL;
 
     handle->handle.read = stdio_read_file_handle_read;
     handle->handle.tell = stdio_read_file_handle_tell;

@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "junzip.h"
 
@@ -32,6 +33,17 @@ int makeDirectory(char *dir) {
 void writeFile(char *filename, void *data, long bytes) {
     FILE *out;
     int i;
+
+    // Reject unsafe filenames (Zip Slip protection)
+    if(filename[0] == '/' || strstr(filename, "../")
+#ifdef _WIN32
+            || filename[0] == '\\' || strstr(filename, "..\\")
+            || (filename[0] && filename[1] == ':')
+#endif
+            ) {
+        fprintf(stderr, "Skipping unsafe filename: %s\n", filename);
+        return;
+    }
 
     // simplistic directory creation support
     for(i=0; filename[i]; i++) {
