@@ -77,6 +77,7 @@ int processFile(JZFile *zip, JZFileHeader *centralHeader) {
     JZFileHeader header = *centralHeader; // start with central dir values
     char filename[1024];
     unsigned char *data;
+    uint32_t bytesProduced = 0;
 
     if(jzReadLocalFileHeader(zip, &header, filename, sizeof(filename))) {
         printf("Couldn't read local file header!");
@@ -96,13 +97,14 @@ int processFile(JZFile *zip, JZFileHeader *centralHeader) {
     printf("%s, %d / %d bytes at offset %08X\n", filename,
             header.compressedSize, header.uncompressedSize, header.offset);
 
-    if(jzReadData(zip, &header, data) != Z_OK) {
+    if(jzReadData(zip, &header, data, header.uncompressedSize,
+                &bytesProduced) != JZ_OK) {
         printf("Couldn't read file data!");
         free(data);
         return -1;
     }
 
-    writeFile(filename, data, header.uncompressedSize);
+    writeFile(filename, data, bytesProduced);
     free(data);
 
     return 0;

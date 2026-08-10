@@ -11,6 +11,7 @@ extern "C" {
 #endif /* __cplusplus */
 
 #include <stdint.h>
+#include <stddef.h>
 
 // Enable compiling without Zlib as well
 // (no compression support, only "store")
@@ -20,6 +21,14 @@ extern "C" {
 #define Z_OK 0
 #define Z_ERRNO -1
 #endif
+
+// JUnzip return codes. JZ_OK is zero and equal to Z_OK; all errors are
+// negative, so legacy `if(ret)` and `ret != Z_OK` checks keep working.
+#define JZ_OK 0               // success
+#define JZ_ERR (-1)           // I/O or generic error (same value as Z_ERRNO)
+#define JZ_ERR_UNSUPPORTED (-2) // valid ZIP feature not implemented (ZIP64, encryption, method)
+#define JZ_ERR_CORRUPT (-3)   // malformed, truncated or internally inconsistent archive
+#define JZ_ERR_SIZE (-4)      // claimed size exceeds the caller-provided buffer
 
 #ifdef HAVE_PUFF
 #include "puff.h"
@@ -132,10 +141,29 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
 
+// Standard CRC-32 (ZIP polynomial 0xEDB88320), available regardless of
+// which decompression backend (if any) is compiled in. Compatible with
+// zlib's crc32() calling convention: pass crc=0 for a single-shot checksum.
+uint32_t jz_crc32(uint32_t crc, const void *data, size_t size);
+
 // Read data from file stream, described by header, to preallocated buffer.
-// Return value is zlib coded, e.g. Z_OK, or error code.
-// Note: does not verify CRC32 — caller should check header->crc32 if needed.
-int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer);
+// Returns JZ_OK (zero) on success, negative JZ_ERR_* code on failure.
+//
+// Security contract:
+// - bufferSize is the hard bound: entries claiming uncompressedSize larger
+//   than bufferSize are rejected with JZ_ERR_SIZE before any data is read.
+// - On success *bytesProduced == header->uncompressedSize; decompression
+//   that under- or over-produces, or a store entry whose compressed and
+//   uncompressed sizes differ, is rejected as JZ_ERR_CORRUPT.
+// - CRC32 of the produced bytes is verified against header->crc32, and a
+//   data descriptor (bit 3), when present, must agree with the header
+//   values that bounded the read. The header is never mutated.
+// - Encrypted entries, ZIP64 sentinel sizes and unknown compression methods
+//   are rejected with JZ_ERR_UNSUPPORTED.
+// - When bit 3 is set, sizes/CRC must be pre-filled from the central
+//   directory entry (local header fields are zero in that case).
+int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer,
+        size_t bufferSize, uint32_t *bytesProduced);
 
 #ifdef __cplusplus
 };

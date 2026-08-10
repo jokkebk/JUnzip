@@ -11,6 +11,29 @@
 // into this buffer and is only valid until the next library call.
 unsigned char jzBuffer[JZ_BUFFER_SIZE];
 
+// Standard CRC-32 (polynomial 0xEDB88320, reflected), as used by the ZIP
+// format. The table is built on the stack per call: it costs ~2k simple
+// operations and keeps the function reentrant.
+uint32_t jz_crc32(uint32_t crc, const void *data, size_t size) {
+    uint32_t table[256];
+    const unsigned char *p = (const unsigned char *)data;
+    size_t i;
+    int j;
+
+    for(i = 0; i < 256; i++) {
+        uint32_t r = (uint32_t)i;
+        for(j = 0; j < 8; j++)
+            r = (r & 1) ? (r >> 1) ^ 0xEDB88320UL : (r >> 1);
+        table[i] = r;
+    }
+
+    crc = crc ^ 0xFFFFFFFFUL;
+    for(i = 0; i < size; i++)
+        crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+
+    return crc ^ 0xFFFFFFFFUL;
+}
+
 // Read ZIP file end record. Will move within file.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
     long fileSize, readBytes, i;
@@ -167,9 +190,13 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
     // if(header->generalPurposeBitFlag)
     //     return Z_ERRNO; // Flags not supported
 
+    if(header->compressedSize == 0xFFFFFFFF ||
+            header->uncompressedSize == 0xFFFFFFFF)
+        return JZ_ERR_UNSUPPORTED; // ZIP64 not supported
+
     if(header->compressionMethod == 0 &&
             (header->compressedSize != header->uncompressedSize))
-        return Z_ERRNO; // Method is "store" but sizes indicate otherwise, abort
+        return JZ_ERR_CORRUPT; // Method is "store" but sizes indicate otherwise
 
     return Z_OK;
 }
@@ -177,9 +204,10 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
         char *filename, int len) {
     JZLocalFileHeader localHeader;
+    int ret;
 
-    if(jzReadLocalFileHeaderRaw(zip, &localHeader, filename, len) != Z_OK)
-        return Z_ERRNO;
+    if((ret = jzReadLocalFileHeaderRaw(zip, &localHeader, filename, len)) != Z_OK)
+        return ret;
 
     header->versionNeededToExtract = localHeader.versionNeededToExtract;
     header->generalPurposeBitFlag = localHeader.generalPurposeBitFlag;
@@ -187,134 +215,190 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
     header->lastModFileTime = localHeader.lastModFileTime;
     header->lastModFileDate = localHeader.lastModFileDate;
 
-    // If the local header leaves sizes/CRC zero (bit 3 set), keep any
-    // existing values already present in header (e.g. from central dir).
-    if(localHeader.crc32)
+    // When bit 3 is set, the local header carries no sizes/CRC (they follow
+    // the file data in a data descriptor); keep the caller-provided central
+    // directory values. Otherwise the local header is authoritative.
+    if(!(localHeader.generalPurposeBitFlag & 0x08)) {
         header->crc32 = localHeader.crc32;
-    if(localHeader.compressedSize)
         header->compressedSize = localHeader.compressedSize;
-    if(localHeader.uncompressedSize)
         header->uncompressedSize = localHeader.uncompressedSize;
+    }
 
     header->offset = 0; // not used in local context
 
     return Z_OK;
 }
 
-static int jzReadDataDescriptor(JZFile *zip, JZFileHeader *header) {
+// Read and verify a trailing data descriptor (bit 3). The descriptor is
+// treated purely as a trailer to check: it must agree with the header values
+// that bounded the read. The caller's header is never mutated, so sizes it
+// holds always describe the data actually produced.
+static int jzVerifyDataDescriptor(JZFile *zip, JZFileHeader *header) {
     uint32_t sigOrCrc, crc32, compressedSize, uncompressedSize;
 
     if(zip->read(zip, &sigOrCrc, sizeof(uint32_t)) < sizeof(uint32_t))
-        return Z_ERRNO;
+        return JZ_ERR;
 
     if(sigOrCrc == 0x08074B50) { // signature present
         if(zip->read(zip, &crc32, sizeof(uint32_t)) < sizeof(uint32_t))
-            return Z_ERRNO;
+            return JZ_ERR;
     } else {
         crc32 = sigOrCrc; // signature absent, first field was CRC
     }
 
     if(zip->read(zip, &compressedSize, sizeof(uint32_t)) < sizeof(uint32_t))
-        return Z_ERRNO;
+        return JZ_ERR;
 
     if(zip->read(zip, &uncompressedSize, sizeof(uint32_t)) < sizeof(uint32_t))
-        return Z_ERRNO;
+        return JZ_ERR;
 
-    header->crc32 = crc32;
-    header->compressedSize = compressedSize;
-    header->uncompressedSize = uncompressedSize;
+    if(crc32 != header->crc32 ||
+            compressedSize != header->compressedSize ||
+            uncompressedSize != header->uncompressedSize)
+        return JZ_ERR_CORRUPT; // descriptor disagrees with the values used
 
-    return Z_OK;
+    return JZ_OK;
 }
 
 // Read data from file stream, described by header, to preallocated buffer.
-// Note: does not verify CRC32 of decompressed data. Caller should validate
-// against header->crc32 if data integrity verification is needed.
-int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
-#ifdef HAVE_ZLIB
-    unsigned char *bytes = (unsigned char *)buffer; // cast
-    int ret;
-    z_stream strm;
-#endif
+// See junzip.h for the full security contract.
+int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer,
+        size_t bufferSize, uint32_t *bytesProduced) {
     int hasDataDescriptor = header->generalPurposeBitFlag & 0x08;
 
+    if(bytesProduced == NULL || (buffer == NULL && bufferSize > 0))
+        return JZ_ERR;
+
+    *bytesProduced = 0;
+
+    if(header->generalPurposeBitFlag & 0x01)
+        return JZ_ERR_UNSUPPORTED; // encrypted entries not supported
+
+    if(header->compressedSize == 0xFFFFFFFF ||
+            header->uncompressedSize == 0xFFFFFFFF)
+        return JZ_ERR_UNSUPPORTED; // ZIP64 not supported
+
+    // Hard bound: never produce more than the caller's buffer holds.
+    if(header->uncompressedSize > bufferSize)
+        return JZ_ERR_SIZE;
+
     if(header->compressionMethod == 0) { // Store - just read it
-        if(zip->read(zip, buffer, header->uncompressedSize) <
-                header->uncompressedSize || zip->error(zip))
-            return Z_ERRNO;
+        if(header->compressedSize != header->uncompressedSize)
+            return JZ_ERR_CORRUPT; // stored entries must have equal sizes
 
-        if(hasDataDescriptor) {
-            if(jzReadDataDescriptor(zip, header) != Z_OK)
-                return Z_ERRNO;
-        }
+        if(header->uncompressedSize > 0 &&
+                (zip->read(zip, buffer, header->uncompressedSize) <
+                 header->uncompressedSize || zip->error(zip)))
+            return JZ_ERR;
+
+        *bytesProduced = header->uncompressedSize;
+    } else if(header->compressionMethod == 8) { // Deflate
+        if(header->compressedSize == 0)
+            return JZ_ERR_CORRUPT; // unknown size; pre-fill from central dir
 #ifdef HAVE_ZLIB
-    } else if(header->compressionMethod == 8) { // Deflate - using zlib
-        if(header->compressedSize == 0 || header->uncompressedSize == 0)
-            return Z_ERRNO; // need sizes, use central directory values
+        z_stream strm;
+        unsigned char inbuf[16384]; // bounded input chunks, never sized by archive
+        uint32_t remaining = header->compressedSize;
+        int zret = Z_OK;
 
-        // Read all compressed data into a single buffer
-        unsigned char *comp = (unsigned char *)malloc(header->compressedSize);
-        if(comp == NULL) return Z_ERRNO;
+        memset(&strm, 0, sizeof(strm));
+
+        // Use inflateInit2 with negative window bits to indicate raw data
+        if(inflateInit2(&strm, -MAX_WBITS) != Z_OK)
+            return JZ_ERR;
+
+        strm.next_out = (unsigned char *)buffer;
+        strm.avail_out = header->uncompressedSize;
+
+        while(remaining > 0) {
+            size_t chunk = remaining < sizeof(inbuf) ?
+                (size_t)remaining : sizeof(inbuf);
+
+            if(zip->read(zip, inbuf, chunk) < chunk || zip->error(zip)) {
+                inflateEnd(&strm);
+                return JZ_ERR;
+            }
+            remaining -= (uint32_t)chunk;
+
+            strm.next_in = inbuf;
+            strm.avail_in = (uInt)chunk;
+
+            zret = inflate(&strm, Z_NO_FLUSH);
+            if(zret == Z_STREAM_END)
+                break;
+            if(zret != Z_OK || strm.avail_out == 0) {
+                // corrupt stream, or more output than claimed
+                inflateEnd(&strm);
+                return JZ_ERR_CORRUPT;
+            }
+        }
+
+        // The stream must terminate exactly at the declared sizes: no
+        // truncation, no trailing garbage, no partial output.
+        if(zret != Z_STREAM_END ||
+                strm.total_out != header->uncompressedSize ||
+                strm.total_in != header->compressedSize) {
+            inflateEnd(&strm);
+            return JZ_ERR_CORRUPT;
+        }
+
+        inflateEnd(&strm);
+        *bytesProduced = header->uncompressedSize;
+#else
+#ifdef HAVE_PUFF
+        unsigned long destlen, sourcelen;
+        unsigned char *comp;
+        uint64_t maxCompressed;
+        int ret;
+
+        // puff() needs the whole input in memory, so reject implausible
+        // sizes before performing an archive-controlled allocation. A valid
+        // deflate stream producing N bytes costs at most 15 bits per literal
+        // plus a dynamic block descriptor of a few hundred bytes, i.e. well
+        // under 2N + 1024; anything larger is guaranteed garbage.
+        maxCompressed = (uint64_t)header->uncompressedSize * 2 + 1024;
+        if(header->compressedSize > maxCompressed)
+            return JZ_ERR_CORRUPT;
+
+        comp = (unsigned char *)malloc(header->compressedSize);
+        if(comp == NULL)
+            return JZ_ERR;
 
         if(zip->read(zip, comp, header->compressedSize) <
                 header->compressedSize || zip->error(zip)) {
             free(comp);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
-        strm.zalloc = Z_NULL;
-        strm.zfree = Z_NULL;
-        strm.opaque = Z_NULL;
-        strm.avail_in = header->compressedSize;
-        strm.next_in = comp;
-
-        // Use inflateInit2 with negative window bits to indicate raw data
-        if((ret = inflateInit2(&strm, -MAX_WBITS)) != Z_OK) {
-            free(comp);
-            return ret;
-        }
-
-        strm.avail_out = header->uncompressedSize;
-        strm.next_out = bytes;
-
-        ret = inflate(&strm, Z_FINISH);
-        inflateEnd(&strm);
+        destlen = header->uncompressedSize;
+        sourcelen = header->compressedSize;
+        ret = puff((unsigned char *)buffer, &destlen, comp, &sourcelen);
         free(comp);
 
-        if(ret != Z_STREAM_END)
-            return (ret == Z_OK) ? Z_ERRNO : ret;
+        if(ret != 0 || destlen != header->uncompressedSize ||
+                sourcelen != header->compressedSize)
+            return JZ_ERR_CORRUPT; // bad stream, wrong output size, trailing data
 
-        if(hasDataDescriptor) {
-            if(jzReadDataDescriptor(zip, header) != Z_OK)
-                return Z_ERRNO;
-        }
+        *bytesProduced = header->uncompressedSize;
 #else
-#ifdef HAVE_PUFF
-    } else if(header->compressionMethod == 8) { // Deflate - using puff()
-        if(header->compressedSize == 0 || header->uncompressedSize == 0)
-            return Z_ERRNO; // need sizes, use central directory values
-
-        unsigned long destlen = header->uncompressedSize,
-                      sourcelen = header->compressedSize;
-        unsigned char *comp = (unsigned char *)malloc(sourcelen);
-        if(comp == NULL) return Z_ERRNO; // couldn't allocate
-        unsigned long read = zip->read(zip, comp, sourcelen);
-        if(read != sourcelen) { free(comp); return Z_ERRNO; }
-        int ret = puff((unsigned char *)buffer, &destlen, comp, &sourcelen);
-        free(comp);
-        if(ret) return Z_ERRNO; // something went wrong
-
-        if(hasDataDescriptor) {
-            if(jzReadDataDescriptor(zip, header) != Z_OK)
-                return Z_ERRNO;
-        }
+        return JZ_ERR_UNSUPPORTED; // no decompression backend compiled in
 #endif // HAVE_PUFF
 #endif
     } else {
-        return Z_ERRNO;
+        return JZ_ERR_UNSUPPORTED; // unknown compression method
     }
 
-    return Z_OK;
+    if(hasDataDescriptor) {
+        if(jzVerifyDataDescriptor(zip, header) != JZ_OK)
+            return JZ_ERR_CORRUPT;
+    }
+
+    // Integrity: produced bytes must match the CRC from the central
+    // directory (or local header / verified data descriptor).
+    if(jz_crc32(0, buffer, *bytesProduced) != header->crc32)
+        return JZ_ERR_CORRUPT;
+
+    return JZ_OK;
 }
 
 
