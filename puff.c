@@ -77,6 +77,13 @@
  *                      - Allow incomplete code only if single code length is 1
  *                      - Add full code coverage test to Makefile
  * 2.3  21 Jan 2013     - Check for invalid code length codes in dynamic blocks
+ *
+ * Local modifications (altered source version, per the license in puff.h):
+ *
+ * JUnzip 2026          - fixed() builds its Huffman tables on the stack on
+ *                        every call instead of using lazily initialized
+ *                        statics, making puff() reentrant/thread-safe at
+ *                        negligible cost
  */
 
 #include <setjmp.h>             /* for setjmp(), longjmp(), and jmp_buf */
@@ -535,41 +542,35 @@ local int codes(struct state *s,
  */
 local int fixed(struct state *s)
 {
-    static int virgin = 1;
-    static short lencnt[MAXBITS+1], lensym[FIXLCODES];
-    static short distcnt[MAXBITS+1], distsym[MAXDCODES];
-    static struct huffman lencode, distcode;
+    /* JUnzip: tables live on the stack and are built on every call, so this
+     * function is reentrant (the original used lazily initialized statics) */
+    short lencnt[MAXBITS+1], lensym[FIXLCODES];
+    short distcnt[MAXBITS+1], distsym[MAXDCODES];
+    struct huffman lencode, distcode;
+    int symbol;
+    short lengths[FIXLCODES];
 
-    /* build fixed huffman tables if first call (may not be thread safe) */
-    if (virgin) {
-        int symbol;
-        short lengths[FIXLCODES];
+    /* construct lencode and distcode */
+    lencode.count = lencnt;
+    lencode.symbol = lensym;
+    distcode.count = distcnt;
+    distcode.symbol = distsym;
 
-        /* construct lencode and distcode */
-        lencode.count = lencnt;
-        lencode.symbol = lensym;
-        distcode.count = distcnt;
-        distcode.symbol = distsym;
+    /* literal/length table */
+    for (symbol = 0; symbol < 144; symbol++)
+        lengths[symbol] = 8;
+    for (; symbol < 256; symbol++)
+        lengths[symbol] = 9;
+    for (; symbol < 280; symbol++)
+        lengths[symbol] = 7;
+    for (; symbol < FIXLCODES; symbol++)
+        lengths[symbol] = 8;
+    construct(&lencode, lengths, FIXLCODES);
 
-        /* literal/length table */
-        for (symbol = 0; symbol < 144; symbol++)
-            lengths[symbol] = 8;
-        for (; symbol < 256; symbol++)
-            lengths[symbol] = 9;
-        for (; symbol < 280; symbol++)
-            lengths[symbol] = 7;
-        for (; symbol < FIXLCODES; symbol++)
-            lengths[symbol] = 8;
-        construct(&lencode, lengths, FIXLCODES);
-
-        /* distance table */
-        for (symbol = 0; symbol < MAXDCODES; symbol++)
-            lengths[symbol] = 5;
-        construct(&distcode, lengths, MAXDCODES);
-
-        /* do this just once */
-        virgin = 0;
-    }
+    /* distance table */
+    for (symbol = 0; symbol < MAXDCODES; symbol++)
+        lengths[symbol] = 5;
+    construct(&distcode, lengths, MAXDCODES);
 
     /* decode data until end-of-block code */
     return codes(s, &lencode, &distcode);
