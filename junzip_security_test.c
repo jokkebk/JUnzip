@@ -182,6 +182,14 @@ static const unsigned char fix_deflate[] = {
 };
 #define FIX_DEFLATE_LEN 19
 
+#if defined(HAVE_ZLIB) || defined(HAVE_PUFF)
+#define DEFLATE_RESULT(result) (result)
+#define HAVE_DEFLATE_BACKEND 1
+#else
+#define DEFLATE_RESULT(result) JZ_ERR_UNSUPPORTED
+#define HAVE_DEFLATE_BACKEND 0
+#endif
+
 // ---------------------------------------------------------------------------
 // Helpers driving the library the way a typical consumer would
 // ---------------------------------------------------------------------------
@@ -258,6 +266,24 @@ static void test_store_size_mismatch(void) {
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
 }
 
+static void test_local_header_mismatch(void) {
+    ZipBuf z;
+    unsigned char out[64];
+    uint32_t produced;
+
+    build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN,
+            fix_data, FIX_LEN);
+    z.bytes[offsetof(JZLocalFileHeader, compressedSize)]++;
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            JZ_ERR_CORRUPT);
+
+    build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN,
+            fix_data, FIX_LEN);
+    z.bytes[offsetof(JZLocalFileHeader, compressionMethod)] = 8;
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            JZ_ERR_CORRUPT);
+}
+
 static void test_store_crc_mismatch(void) {
     ZipBuf z;
     unsigned char out[64];
@@ -288,9 +314,14 @@ static void test_deflate_roundtrip(void) {
 
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN,
             fix_deflate, FIX_DEFLATE_LEN);
+#if HAVE_DEFLATE_BACKEND
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_OK);
     EXPECT(produced == FIX_LEN);
     EXPECT(memcmp(out, fix_data, FIX_LEN) == 0);
+#else
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            JZ_ERR_UNSUPPORTED);
+#endif
 }
 
 static void test_deflate_short_production(void) {
@@ -302,7 +333,8 @@ static void test_deflate_short_production(void) {
     // rejected, not zero-padded or left uninitialized.
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, 1000,
             fix_deflate, FIX_DEFLATE_LEN);
-    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            DEFLATE_RESULT(JZ_ERR_CORRUPT));
 }
 
 static void test_deflate_over_production(void) {
@@ -313,7 +345,8 @@ static void test_deflate_over_production(void) {
     // Stream produces 32 bytes but only 4 are claimed (zip-bomb shape).
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, 4,
             fix_deflate, FIX_DEFLATE_LEN);
-    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            DEFLATE_RESULT(JZ_ERR_CORRUPT));
 }
 
 static void test_deflate_trailing_garbage(void) {
@@ -331,7 +364,8 @@ static void test_deflate_trailing_garbage(void) {
         zb_central(&z, "a.txt", 20, 0, 8, FIX_CRC, FIX_DEFLATE_LEN + 4, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
-    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            DEFLATE_RESULT(JZ_ERR_CORRUPT));
 }
 
 static void test_zip64_sentinel(void) {
@@ -463,8 +497,13 @@ static void test_empty_entries(void) {
     {
         static const unsigned char empty_deflate[] = { 0x03, 0x00 };
         build_simple(&z, "empty.txt", 0, 8, 0, 2, 0, empty_deflate, 2);
+#if HAVE_DEFLATE_BACKEND
         EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_OK);
         EXPECT(produced == 0);
+#else
+        EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+                JZ_ERR_UNSUPPORTED);
+#endif
     }
 }
 
@@ -657,11 +696,35 @@ static void test_version_rejected(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: archived filename validation
+// ---------------------------------------------------------------------------
+
+static void test_filename_safety(void) {
+    static const char *safe[] = {
+        "file.txt", "dir/file.txt", "a/b/c/d.e", "dir/",
+        "a..b", "..foo/bar", "foo.", "dir/", NULL
+    };
+    static const char *unsafe[] = {
+        "", "/abs.txt", "\\abs.txt", "C:/win.txt", "c:\\win.txt",
+        "../evil", "..\\evil", "a/../b", "a\\..\\b", "a/./b",
+        "foo/..", "foo/.", "..", ".", "a//b", "dir//", "bad\tname",
+        "bad\x7Fname", NULL
+    };
+    int i;
+
+    for(i = 0; safe[i]; i++)
+        EXPECT(jzFilenameIsSafe(safe[i]) == 1);
+    for(i = 0; unsafe[i]; i++)
+        EXPECT(jzFilenameIsSafe(unsafe[i]) == 0);
+}
+
+// ---------------------------------------------------------------------------
 
 int main(void) {
     test_crc32_vectors();
     test_store_roundtrip();
     test_store_size_mismatch();
+    test_local_header_mismatch();
     test_store_crc_mismatch();
     test_buffer_too_small();
     test_deflate_roundtrip();
@@ -684,6 +747,7 @@ int main(void) {
     test_cd_entry_overrun();
     test_zip64_endrecord();
     test_version_rejected();
+    test_filename_safety();
 
     printf("%d checks, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;

@@ -1,198 +1,339 @@
-/* Simple "zip" utility WITHOUT COMPRESSIONS (stores files).
- * Should compile with something like gcc jzip_store.c junzip.c -o junzip.exe
- * CRC32 routine is from Björn Samuelsson's public domain implementation at
- * http://home.thep.lu.se/~bjorn/crc/ 
- */
+/* Simple ZIP writer. Files are stored without compression unless
+ * HAVE_ZLIB is enabled, in which case entries use raw deflate. */
 
 #include <stdio.h>
 #include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/stat.h>
 
 #include "junzip.h"
 
-#ifndef HAVE_ZLIB
-// Use Björn's simple crc32 routines if no zlib version available
-uint32_t crc32_for_byte(uint32_t r) {
-    for(int j = 0; j < 8; ++j)
-        r = (r & 1? 0: (uint32_t)0xEDB88320L) ^ r >> 1;
-    return r ^ (uint32_t)0xFF000000L;
+static int writeBytes(FILE *file, const void *data, size_t size) {
+    return size == 0 || fwrite(data, 1, size, file) == size;
 }
 
-// Modified function to be compatible with Zlib-provided version
-uint32_t crc32(uint32_t crc, const void *data, size_t n_bytes) {
-    static uint32_t table[256];
-    if(!*table) for(size_t i = 0; i < 0x100; ++i) table[i] = crc32_for_byte(i);
-    for(size_t i = 0; i < n_bytes; ++i)
-        crc = table[(uint8_t)crc ^ ((uint8_t*)data)[i]] ^ crc >> 8;
+static int filePosition(FILE *file, uint32_t *position) {
+    long value = ftell(file);
 
-    return crc;
+    if(value < 0 || (uint64_t)value > UINT32_MAX)
+        return 0;
+    *position = (uint32_t)value;
+    return 1;
+}
+
+static const char *archiveName(const char *path) {
+    const char *name = path + strlen(path);
+
+    while(name > path && name[-1] != '/' && name[-1] != '\\')
+        name--;
+    return name;
+}
+
+#ifdef HAVE_ZLIB
+static int compressFile(FILE *input, uint32_t inputSize,
+        unsigned char **compressedOut, uint32_t *compressedSizeOut) {
+    unsigned long capacity = compressBound(inputSize);
+    unsigned char *data = NULL;
+    unsigned char *compressed;
+    unsigned char empty = 0;
+    z_stream stream;
+    size_t bytes;
+
+    if(capacity > UINT_MAX)
+        return 0;
+
+    compressed = (unsigned char *)malloc(capacity);
+    if(compressed == NULL)
+        return 0;
+
+    if(inputSize > 0) {
+        data = (unsigned char *)malloc(inputSize);
+        if(data == NULL) {
+            free(compressed);
+            return 0;
+        }
+    }
+
+    if(fseek(input, 0, SEEK_SET) != 0) {
+        free(data);
+        free(compressed);
+        return 0;
+    }
+
+    bytes = inputSize == 0 ? 0 : fread(data, 1, inputSize, input);
+    if(bytes != inputSize || ferror(input)) {
+        free(data);
+        free(compressed);
+        return 0;
+    }
+
+    memset(&stream, 0, sizeof(stream));
+    if(deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+            -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(data);
+        free(compressed);
+        return 0;
+    }
+
+    stream.next_in = inputSize == 0 ? &empty : data;
+    stream.avail_in = inputSize;
+    stream.next_out = compressed;
+    stream.avail_out = (uInt)capacity;
+
+    if(deflate(&stream, Z_FINISH) != Z_STREAM_END ||
+            stream.total_out > UINT32_MAX) {
+        deflateEnd(&stream);
+        free(data);
+        free(compressed);
+        return 0;
+    }
+
+    *compressedSizeOut = (uint32_t)stream.total_out;
+    *compressedOut = compressed;
+    deflateEnd(&stream);
+    free(data);
+    return 1;
 }
 #endif
 
 int main(int argc, char *argv[]) {
-    FILE *in, *out;
-    unsigned char buf[1<<15];
-    int files = 0, i; // actual files and argv indices of them
-    char **filenames;
+    FILE *out = NULL;
+    FILE *in;
+    unsigned char buf[1 << 15];
+    int files = 0;
+    int requestedFiles;
+    int i;
+    int status = -1;
+    char **filenames = NULL;
+    JZGlobalFileHeader *globalHeader = NULL;
+    JZEndRecord endRecord;
+    uint32_t centralOffset;
 
     if(argc < 3) {
-        puts("Usage: jzip_store file1 [file2 file3 ...] output.zip");
-        return 0;
+        puts("Usage: jzip_demo file1 [file2 file3 ...] output.zip");
+        return 1;
     }
 
-    out = fopen(argv[argc-1], "wb");
+    requestedFiles = argc - 2;
+    if((uint64_t)requestedFiles > UINT16_MAX) {
+        puts("Too many input files for classic ZIP format.");
+        return 1;
+    }
+
+    // Avoid the most obvious self-truncation case before opening output.
+    for(i = 1; i < argc - 1; i++) {
+        if(strcmp(argv[i], argv[argc - 1]) == 0) {
+            puts("An input file cannot also be the output archive.");
+            return 1;
+        }
+    }
+
+    out = fopen(argv[argc - 1], "wb");
     if(out == NULL) {
-        printf("Couldn't open \"%s\" for writing!\n", argv[argc-1]);
-        return -1;
+        printf("Couldn't open \"%s\" for writing!\n", argv[argc - 1]);
+        return 1;
     }
 
-    JZGlobalFileHeader *globalHeader = (JZGlobalFileHeader *)calloc((argc-2),
+    globalHeader = (JZGlobalFileHeader *)calloc((size_t)requestedFiles,
             sizeof(JZGlobalFileHeader));
-    JZEndRecord jzEndRecord;
-
-    if(globalHeader == NULL) {
-        puts("Failed to allocate buffers to headers!");
-        return 0;
+    filenames = (char **)calloc((size_t)requestedFiles, sizeof(char *));
+    if(globalHeader == NULL || filenames == NULL) {
+        puts("Failed to allocate buffers for ZIP headers.");
+        goto cleanup;
     }
 
-    if((filenames = malloc(sizeof(char *) * (argc-2))) == NULL) {
-        puts("Failed to allocate pointers to filenames!");
-        return 0;
-    }
-
-    for(int i = 0; i < argc-2; i++) {
-        JZLocalFileHeader header = {0};
+    for(i = 0; i < requestedFiles; i++) {
+        JZLocalFileHeader localHeader;
+        JZGlobalFileHeader *global;
         struct stat st;
-        struct tm * timeinfo;
+        struct tm *timeinfo;
+        const char *name = archiveName(argv[i + 1]);
+        size_t nameLength = strlen(name);
+        uint32_t inputSize;
+        uint32_t offset;
+        uint32_t outputOffset;
 
-        filenames[files] = argv[i+1]; // needed due to possible skipped arguments
-        if((in = fopen(filenames[files], "rb")) == NULL) {
-            printf("File \"%s\" not found, just skipping...\n", filenames[files]);
+        if(!jzFilenameIsSafe(name) || nameLength > UINT16_MAX) {
+            printf("Skipping unsafe or too-long archive name \"%s\".\n",
+                    name);
             continue;
         }
 
-        while(!feof(in) && !ferror(in))
-            header.crc32 = crc32(header.crc32, buf, fread(buf, 1, sizeof(buf), in));
-        printf("CRC of %s was %08X\n", filenames[files], header.crc32);
-
-        if(ferror(in)) {
-            puts("Error while calculating CRC, skipping store.");
-        } else {
-            JZGlobalFileHeader *gf = globalHeader + files;
-
-            stat(filenames[files], &st);
-            timeinfo = localtime(&st.st_mtime);
-
-            header.signature = 0x04034B50;
-            gf->signature = 0x02014B50;
-            gf->versionMadeBy = 10; // random stuff
-            gf->versionNeededToExtract = header.versionNeededToExtract = 10;
-            gf->generalPurposeBitFlag = header.generalPurposeBitFlag = 0;
-            gf->compressionMethod = header.compressionMethod = 0;
-            gf->lastModFileTime = header.lastModFileTime = JZTIME(
-                    timeinfo->tm_hour,
-                    timeinfo->tm_min,
-                    timeinfo->tm_sec);
-            gf->lastModFileDate = header.lastModFileDate = JZDATE(
-                    timeinfo->tm_year+1900,
-                    timeinfo->tm_mon+1,
-                    timeinfo->tm_mday);
-            gf->crc32 = header.crc32;
-            gf->uncompressedSize = header.uncompressedSize = ftell(in);
-            gf->fileNameLength = header.fileNameLength = strlen(filenames[files]);
-            gf->extraFieldLength = header.extraFieldLength = 0;
-            gf->fileCommentLength = 0;
-            gf->diskNumberStart = 0;
-            gf->internalFileAttributes = 0;
-            gf->externalFileAttributes = 0x20; // whatever this is
-            gf->relativeOffsetOflocalHeader = ftell(out);
-
-#ifdef HAVE_ZLIB
-            puts("Compiled with Zlib, compressing...");
-            // Instead of nice 40 lines of code initializing zlib stream
-            // version, we'll just blindly read whole file and and use
-            // compress(). This means it won't handle GB files well. See
-            // actual Zlib examples for nicer way to do this in pieces.
-            // For really uncompressible files, we reserve a bit extra
-            unsigned long compSize = compressBound(header.uncompressedSize),
-                dataSize = header.uncompressedSize;
-            unsigned char *comp = (unsigned char *)malloc(compSize),
-                          *data = (unsigned char *)malloc(dataSize);
-
-            if(comp == NULL) {
-                puts("Couldn't allocate buffer for compressed data");
-                return -1; // TODO: Graceful exit with free, fclose, fclose, etc.
-            }
-            if(data == NULL) {
-                puts("Couldn't allocate buffer for uncompressed data");
-                return -1; // TODO: Graceful exit with free, fclose, fclose, etc.
-            }
-
-            fseek(in, 0, SEEK_SET); // rewind
-            size_t bytes = fread(data, 1, dataSize, in);
-            if(bytes != dataSize) {
-                printf("Failed to read file in full (%d vs. %ld bytes)",
-                        bytes, dataSize);
-                return -1;
-            }
-            compress(comp, &compSize, data, dataSize);
-            printf("Compressed from %ld to %ld bytes\n", dataSize, compSize);
-            gf->compressedSize = header.compressedSize = compSize;
-#else
-            gf->compressedSize = header.compressedSize = ftell(in);
-#endif
-
-            printf("[%08X] ", (int)ftell(out));
-            printf("Writing local header for %s\n", filenames[files]);
-            fwrite(&header, 1, sizeof(header), out);
-            printf("[%08X] ", (int)ftell(out));
-            printf("Writing filename\n");
-            fwrite(filenames[files], 1, strlen(filenames[files]), out);
-
-#ifdef HAVE_ZLIB
-            fwrite(comp, compSize, 1, out);
-            free(comp);
-            free(data);
-#else
-            // The plain store version makes do with a smaller buffer
-            fseek(in, 0, SEEK_SET); // rewind input file
-            while(!feof(in) && !ferror(in)) {
-                size_t bytes = fread(buf, 1, sizeof(buf), in);
-                fwrite(buf, 1, bytes, out);
-            }
-#endif
-
-            files++;
+        if((in = fopen(argv[i + 1], "rb")) == NULL) {
+            printf("File \"%s\" not found, skipping.\n", argv[i + 1]);
+            continue;
         }
 
+        if(stat(argv[i + 1], &st) != 0 || st.st_size < 0 ||
+                (uint64_t)st.st_size > UINT32_MAX) {
+            printf("Cannot use \"%s\" in a classic ZIP archive.\n",
+                    argv[i + 1]);
+            fclose(in);
+            continue;
+        }
+        inputSize = (uint32_t)st.st_size;
+
+        timeinfo = localtime(&st.st_mtime);
+        if(timeinfo == NULL) {
+            puts("Could not convert input file timestamp.");
+            fclose(in);
+            goto cleanup;
+        }
+
+        if(!filePosition(out, &outputOffset)) {
+            puts("Output archive is too large for classic ZIP format.");
+            fclose(in);
+            goto cleanup;
+        }
+
+        memset(&localHeader, 0, sizeof(localHeader));
+        localHeader.signature = 0x04034B50;
+        localHeader.versionNeededToExtract = 20;
+        localHeader.compressionMethod = 0;
+        localHeader.lastModFileTime = (uint16_t)JZTIME(
+                timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+        localHeader.lastModFileDate = (uint16_t)JZDATE(
+                timeinfo->tm_year + 1900, timeinfo->tm_mon + 1,
+                timeinfo->tm_mday);
+        localHeader.crc32 = 0;
+        localHeader.fileNameLength = (uint16_t)nameLength;
+
+        // Calculate the CRC before writing either header or payload.
+        if(fseek(in, 0, SEEK_SET) != 0) {
+            fclose(in);
+            goto cleanup;
+        }
+        while(!feof(in) && !ferror(in)) {
+            size_t bytes = fread(buf, 1, sizeof(buf), in);
+            localHeader.crc32 = jz_crc32(localHeader.crc32, buf, bytes);
+        }
+        if(ferror(in)) {
+            puts("Error while calculating CRC.");
+            fclose(in);
+            goto cleanup;
+        }
+
+        if(!filePosition(in, &offset) || offset != inputSize) {
+            puts("Input changed while it was being read.");
+            fclose(in);
+            goto cleanup;
+        }
+
+        localHeader.uncompressedSize = inputSize;
+
+        global = globalHeader + files;
+        memset(global, 0, sizeof(*global));
+        global->signature = 0x02014B50;
+        global->versionMadeBy = 20;
+        global->versionNeededToExtract = localHeader.versionNeededToExtract;
+        global->compressionMethod = localHeader.compressionMethod;
+        global->lastModFileTime = localHeader.lastModFileTime;
+        global->lastModFileDate = localHeader.lastModFileDate;
+        global->crc32 = localHeader.crc32;
+        global->uncompressedSize = inputSize;
+        global->fileNameLength = localHeader.fileNameLength;
+        global->externalFileAttributes = 0x20;
+        global->relativeOffsetOflocalHeader = outputOffset;
+
+#ifdef HAVE_ZLIB
+        {
+            unsigned char *compressed = NULL;
+            uint32_t compressedSize;
+
+            if(!compressFile(in, inputSize, &compressed, &compressedSize)) {
+                puts("Compression failed.");
+                fclose(in);
+                goto cleanup;
+            }
+            localHeader.compressionMethod = 8;
+            localHeader.compressedSize = compressedSize;
+            global->compressionMethod = 8;
+            global->compressedSize = compressedSize;
+            printf("Compressed %s from %u to %u bytes.\n", name,
+                    inputSize, compressedSize);
+
+            if(!writeBytes(out, &localHeader, sizeof(localHeader)) ||
+                    !writeBytes(out, name, nameLength) ||
+                    !writeBytes(out, compressed, compressedSize)) {
+                free(compressed);
+                fclose(in);
+                puts("Error while writing an archive entry.");
+                goto cleanup;
+            }
+            free(compressed);
+        }
+#else
+        localHeader.compressedSize = inputSize;
+        global->compressedSize = inputSize;
+        if(fseek(in, 0, SEEK_SET) != 0 ||
+                !writeBytes(out, &localHeader, sizeof(localHeader)) ||
+                !writeBytes(out, name, nameLength)) {
+            fclose(in);
+            puts("Error while writing an archive entry.");
+            goto cleanup;
+        }
+        while(!feof(in) && !ferror(in)) {
+            size_t bytes = fread(buf, 1, sizeof(buf), in);
+            if(!writeBytes(out, buf, bytes)) {
+                fclose(in);
+                puts("Error while writing an archive entry.");
+                goto cleanup;
+            }
+        }
+        if(ferror(in)) {
+            fclose(in);
+            puts("Error while reading an archive entry.");
+            goto cleanup;
+        }
+#endif
+
+        filenames[files++] = (char *)name;
         fclose(in);
     }
 
-    jzEndRecord.signature = 0x06054b50;
-    jzEndRecord.diskNumber = 0;
-    jzEndRecord.centralDirectoryDiskNumber = 0;
-    jzEndRecord.numEntriesThisDisk = files;
-    jzEndRecord.numEntries = files;
-    jzEndRecord.centralDirectoryOffset = ftell(out);
-    for(i = 0; i < files; i++) {
-        printf("[%08X] ", (int)ftell(out));
-        printf("Writing global header for %s (%d + %d bytes)...\n", filenames[i],
-                (int)sizeof(JZGlobalFileHeader), (int)strlen(filenames[i]));
-        fwrite(globalHeader + i, 1, sizeof(JZGlobalFileHeader), out);
-        fwrite(filenames[i], 1, strlen(filenames[i]), out);
+    if(!filePosition(out, &centralOffset)) {
+        puts("Output archive is too large for classic ZIP format.");
+        goto cleanup;
     }
-    jzEndRecord.centralDirectorySize = ftell(out) - jzEndRecord.centralDirectoryOffset;
-    jzEndRecord.zipCommentLength = 0;
 
-    printf("[%08X] ", (int)ftell(out));
-    puts("Writing end record.");
-    fwrite(&jzEndRecord, 1, sizeof(jzEndRecord), out);
+    for(i = 0; i < files; i++) {
+        size_t nameLength = strlen(filenames[i]);
+        if(!writeBytes(out, globalHeader + i, sizeof(JZGlobalFileHeader)) ||
+                !writeBytes(out, filenames[i], nameLength)) {
+            puts("Error while writing the central directory.");
+            goto cleanup;
+        }
+    }
 
-    fclose(out);
+    memset(&endRecord, 0, sizeof(endRecord));
+    endRecord.signature = 0x06054B50;
+    endRecord.numEntriesThisDisk = (uint16_t)files;
+    endRecord.numEntries = (uint16_t)files;
+    endRecord.centralDirectoryOffset = centralOffset;
+    {
+        uint32_t endPosition;
+        if(!filePosition(out, &endPosition) || endPosition < centralOffset) {
+            puts("Invalid central directory position.");
+            goto cleanup;
+        }
+        endRecord.centralDirectorySize = endPosition - centralOffset;
+    }
+
+    if(!writeBytes(out, &endRecord, sizeof(endRecord)) || fclose(out) != 0) {
+        out = NULL;
+        puts("Error while writing the end record.");
+        goto cleanup;
+    }
+    out = NULL;
+    status = 0;
+
+cleanup:
+    if(out != NULL)
+        fclose(out);
     free(globalHeader);
-
-    return 0;
+    free(filenames);
+    return status;
 }

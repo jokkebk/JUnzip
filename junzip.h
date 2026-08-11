@@ -22,13 +22,16 @@ extern "C" {
 #define Z_ERRNO -1
 #endif
 
-// JUnzip return codes. JZ_OK is zero and equal to Z_OK; all errors are
-// negative, so legacy `if(ret)` and `ret != Z_OK` checks keep working.
-#define JZ_OK 0               // success
-#define JZ_ERR (-1)           // I/O or generic error (same value as Z_ERRNO)
-#define JZ_ERR_UNSUPPORTED (-2) // valid ZIP feature not implemented (ZIP64, encryption, method)
-#define JZ_ERR_CORRUPT (-3)   // malformed, truncated or internally inconsistent archive
-#define JZ_ERR_SIZE (-4)      // claimed size exceeds the caller-provided buffer
+// JUnzip return codes. These are deliberately independent of zlib's error
+// namespace so callers can use the same checks with either decompression
+// backend.
+typedef enum {
+    JZ_OK = 0,
+    JZ_ERR = -1,          // I/O or generic error
+    JZ_ERR_UNSUPPORTED = -2, // valid ZIP feature not implemented
+    JZ_ERR_CORRUPT = -3, // malformed, truncated or inconsistent archive
+    JZ_ERR_SIZE = -4     // claimed size exceeds the caller-provided buffer
+} JZResult;
 
 #ifdef HAVE_PUFF
 #include "puff.h"
@@ -125,24 +128,30 @@ typedef struct __attribute__ ((__packed__)) {
 typedef int (*JZRecordCallback)(JZFile *zip, int index, JZFileHeader *header,
         char *filename, void *user_data);
 
-// Cap for the end-of-file scan window in jzReadEndRecord. The library holds
-// no global mutable state; distinct JZFile instances may be used
-// concurrently from multiple threads.
-#define JZ_BUFFER_SIZE 65536
+// The library holds no global mutable state; distinct JZFile instances may be
+// used concurrently from multiple threads. A JZFile instance itself must not
+// be used concurrently unless its backend provides synchronization.
+#define JZ_MAX_FILENAME_LENGTH 65535
 
-// Read ZIP file end record. Will move within file.
+// Read ZIP file end record. Will move within file. ZIP64 and multi-disk
+// archives are rejected as unsupported.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord);
 
-// Read ZIP file global directory. Will move within file.
-// Callback is called for each record, until callback returns zero
+// Read ZIP file global directory. Will move within file. Callback is called
+// for each record, until callback returns zero. The filename pointer is only
+// valid during the callback and contains no embedded NUL bytes.
 int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         JZRecordCallback callback, void *user_data);
 
-// Read local ZIP file header. Silent on errors so optimistic reading possible.
+// Read local ZIP file header and reconcile it with the central-directory
+// values already in *header. When bit 3 is clear, method, flags, CRC and both
+// sizes must match exactly. When bit 3 is set, local CRC/size fields may be
+// zero or equal to the central values; the data descriptor is checked later
+// by jzReadData(). On failure *header is not modified.
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
         char *filename, int len);
 
-// Same as above but returns the full raw header
+// Read the raw local header without central-directory reconciliation.
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
 
@@ -151,7 +160,16 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
 // zlib's crc32() calling convention: pass crc=0 for a single-shot checksum.
 uint32_t jz_crc32(uint32_t crc, const void *data, size_t size);
 
-// Read data from file stream, described by header, to preallocated buffer.
+// Validate an archived filename before extracting it to disk. Returns 1 if
+// the name is safe to extract relative to the current directory, 0 if not.
+// Both '/' and '\' are treated as path separators on all platforms.
+// Rejected: empty names, absolute paths, drive letters ("C:"), "." and ".."
+// path components, and control characters. Note this cannot defend against
+// symlinked path components in the target directory; extraction code should
+// additionally refuse to descend through symlinks.
+int jzFilenameIsSafe(const char *filename);
+
+// Read data from the stream, described by header, to a preallocated buffer.
 // Returns JZ_OK (zero) on success, negative JZ_ERR_* code on failure.
 //
 // Security contract:
@@ -167,6 +185,8 @@ uint32_t jz_crc32(uint32_t crc, const void *data, size_t size);
 //   are rejected with JZ_ERR_UNSUPPORTED.
 // - When bit 3 is set, sizes/CRC must be pre-filled from the central
 //   directory entry (local header fields are zero in that case).
+// - The current API uses size_t file offsets in JZFile and therefore supports
+//   only archives addressable by the selected C library's fseek/ftell.
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer,
         size_t bufferSize, uint32_t *bytesProduced);
 

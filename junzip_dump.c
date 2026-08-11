@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 
 #include "junzip.h"
 
@@ -25,6 +26,11 @@ int main(int argc, char *argv[]) {
     }
 
     zip = jzfile_from_stdio_file(fp);
+    if(zip == NULL) {
+        fclose(fp);
+        fprintf(stderr, "Couldn't allocate ZIP file handle!\n");
+        return JZ_ERR;
+    }
 
     if(jzReadEndRecord(zip, &jzEndRecord)) {
         printf("Couldn't read ZIP file end record.\n");
@@ -48,31 +54,36 @@ int main(int argc, char *argv[]) {
         if(zip->read(zip, &jzGlobalHeader, sizeof(JZGlobalFileHeader)) <
                 sizeof(JZGlobalFileHeader)) {
             fprintf(stderr, "Couldn't read file header %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         if(jzGlobalHeader.signature != 0x02014B50) {
             fprintf(stderr, "Invalid file header signature %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         if(jzGlobalHeader.fileNameLength + 1 >= sizeof(filename)) {
             fprintf(stderr, "Too long file name %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         if(zip->read(zip, filename, jzGlobalHeader.fileNameLength) <
                 jzGlobalHeader.fileNameLength) {
             fprintf(stderr, "Couldn't read filename %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         filename[jzGlobalHeader.fileNameLength] = '\0'; // NULL terminate
 
+        if(memchr(filename, '\0', jzGlobalHeader.fileNameLength) != NULL) {
+            fprintf(stderr, "Embedded NUL in filename %d!\n", i);
+            goto endClose;
+        }
+
         if(zip->seek(zip, jzGlobalHeader.extraFieldLength, SEEK_CUR) ||
                 zip->seek(zip, jzGlobalHeader.fileCommentLength, SEEK_CUR)) {
             fprintf(stderr, "Couldn't skip extra field or file comment %d", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         // Read the corresponding local header via its relative offset
@@ -80,12 +91,12 @@ int main(int argc, char *argv[]) {
 
         if(zip->seek(zip, jzGlobalHeader.relativeOffsetOflocalHeader, SEEK_SET)) {
             fprintf(stderr, "Couldn't seek to local header %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         if(jzReadLocalFileHeaderRaw(zip, &jzHeader, filename, sizeof(filename)) != Z_OK) {
             fprintf(stderr, "Couldn't read local header %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         printf("Local file header for \"%s\" (%d compressed bytes, flag %d)\n",
@@ -111,7 +122,7 @@ int main(int argc, char *argv[]) {
         // Return to central directory to read next entry
         if(zip->seek(zip, fpos, SEEK_SET)) {
             fprintf(stderr, "Couldn't return to central directory %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         // Position printed earlier
@@ -146,7 +157,7 @@ int main(int argc, char *argv[]) {
     zip->seek(zip, 0, SEEK_END);
     fsize = zip->tell(zip);
 
-    if(fsize - fpos < sizeof(JZEndRecord)) {
+    if(fsize - fpos < (long)sizeof(JZEndRecord)) {
         printf("[%08X] Only %ld bytes remain, end record is 22 bytes, aborting!\n", (int)fpos, fsize - fpos);
         return 0;
     }
