@@ -29,9 +29,13 @@ uint32_t jz_crc32(uint32_t crc, const void *data, size_t size) {
     return crc ^ 0xFFFFFFFFUL;
 }
 
+// The end record sits at most 22 + 65535 (maximum comment) bytes from EOF.
+#define JZ_ENDRECORD_WINDOW ((long)sizeof(JZEndRecord) + 65535)
+
 // Read ZIP file end record. Will move within file.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
     long fileSize, readBytes, i;
+    long erPos = -1;
     unsigned char *window;
     int retval = Z_ERRNO;
 
@@ -40,12 +44,13 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
         return Z_ERRNO;
     }
 
-    if((fileSize = zip->tell(zip)) <= sizeof(JZEndRecord)) {
+    // A valid empty archive is exactly sizeof(JZEndRecord) bytes.
+    if((fileSize = zip->tell(zip)) < (long)sizeof(JZEndRecord)) {
         fprintf(stderr, "Too small file to be a zip!");
         return Z_ERRNO;
     }
 
-    readBytes = (fileSize < JZ_BUFFER_SIZE) ? fileSize : JZ_BUFFER_SIZE;
+    readBytes = (fileSize < JZ_ENDRECORD_WINDOW) ? fileSize : JZ_ENDRECORD_WINDOW;
 
     if((window = (unsigned char *)malloc(readBytes)) == NULL) {
         fprintf(stderr, "Couldn't allocate end record scan buffer!");
@@ -71,6 +76,7 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
         if(er->signature == 0x06054B50) {
             long candidatePos = fileSize - readBytes + i;
             if(candidatePos + sizeof(JZEndRecord) + er->zipCommentLength == fileSize) {
+                erPos = candidatePos;
                 memcpy(endRecord, er, sizeof(JZEndRecord));
                 retval = Z_OK;
                 break;
@@ -90,9 +96,28 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
         goto done;
     }
 
-    if(endRecord->centralDirectoryOffset + endRecord->centralDirectorySize > fileSize) {
-        fprintf(stderr, "Central directory offset/size exceeds file size!");
-        retval = Z_ERRNO;
+    if(endRecord->numEntries == 0xFFFF ||
+            endRecord->centralDirectoryOffset == 0xFFFFFFFF ||
+            endRecord->centralDirectorySize == 0xFFFFFFFF) {
+        fprintf(stderr, "ZIP64 archives not supported!");
+        retval = JZ_ERR_UNSUPPORTED;
+        goto done;
+    }
+
+    // The central directory must fit entirely before the end record. Do the
+    // math in 64 bits: the 32-bit sum can wrap and bypass the check.
+    if((uint64_t)endRecord->centralDirectoryOffset +
+            endRecord->centralDirectorySize > (uint64_t)erPos) {
+        fprintf(stderr, "Central directory exceeds archive layout!");
+        retval = JZ_ERR_CORRUPT;
+        goto done;
+    }
+
+    // Every entry occupies at least sizeof(JZGlobalFileHeader) bytes.
+    if((uint64_t)endRecord->numEntries * sizeof(JZGlobalFileHeader) >
+            endRecord->centralDirectorySize) {
+        fprintf(stderr, "Central directory too small for entry count!");
+        retval = JZ_ERR_CORRUPT;
         goto done;
     }
 
@@ -102,10 +127,13 @@ done:
 }
 
 // Read ZIP file global directory. Will move within file.
+// Iteration is bounded by endRecord->centralDirectorySize: entries reaching
+// past the declared directory are treated as corruption, not parsed.
 int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         JZRecordCallback callback, void *user_data) {
     JZGlobalFileHeader fileHeader;
     JZFileHeader header;
+    uint64_t remaining = endRecord->centralDirectorySize;
     char *filename;
     int i, keepGoing;
 
@@ -115,15 +143,45 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
     }
 
     for(i=0; i<endRecord->numEntries; i++) {
+        if(remaining < sizeof(JZGlobalFileHeader)) {
+            fprintf(stderr, "Central directory truncated at entry %d!", i);
+            return JZ_ERR_CORRUPT;
+        }
+
         if(zip->read(zip, &fileHeader, sizeof(JZGlobalFileHeader)) <
                 sizeof(JZGlobalFileHeader)) {
             fprintf(stderr, "Couldn't read file header %d!", i);
             return Z_ERRNO;
         }
+        remaining -= sizeof(JZGlobalFileHeader);
 
         if(fileHeader.signature != 0x02014B50) {
             fprintf(stderr, "Invalid file header signature %d!", i);
             return Z_ERRNO;
+        }
+
+        if(fileHeader.generalPurposeBitFlag & 0x01) {
+            fprintf(stderr, "Encrypted entry %d not supported!", i);
+            return JZ_ERR_UNSUPPORTED;
+        }
+
+        if(fileHeader.versionNeededToExtract > 20) {
+            fprintf(stderr, "Entry %d needs unsupported version %d!",
+                    i, fileHeader.versionNeededToExtract);
+            return JZ_ERR_UNSUPPORTED;
+        }
+
+        if(fileHeader.compressedSize == 0xFFFFFFFF ||
+                fileHeader.uncompressedSize == 0xFFFFFFFF) {
+            fprintf(stderr, "ZIP64 entry %d not supported!", i);
+            return JZ_ERR_UNSUPPORTED;
+        }
+
+        if((uint64_t)fileHeader.fileNameLength +
+                fileHeader.extraFieldLength + fileHeader.fileCommentLength >
+                remaining) {
+            fprintf(stderr, "Entry %d exceeds central directory!", i);
+            return JZ_ERR_CORRUPT;
         }
 
         if((filename = (char *)malloc(fileHeader.fileNameLength + 1)) == NULL) {
@@ -137,6 +195,7 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
             free(filename);
             return Z_ERRNO;
         }
+        remaining -= fileHeader.fileNameLength;
 
         filename[fileHeader.fileNameLength] = '\0'; // NULL terminate
 
@@ -146,6 +205,8 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
             free(filename);
             return Z_ERRNO;
         }
+        remaining -= (uint64_t)fileHeader.extraFieldLength +
+            fileHeader.fileCommentLength;
 
         // Construct JZFileHeader from global file header
         header.versionNeededToExtract = fileHeader.versionNeededToExtract;
@@ -177,6 +238,12 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
 
     if(header->signature != 0x04034B50)
         return Z_ERRNO;
+
+    if(header->generalPurposeBitFlag & 0x01)
+        return JZ_ERR_UNSUPPORTED; // encrypted entries not supported
+
+    if(header->versionNeededToExtract > 20)
+        return JZ_ERR_UNSUPPORTED; // requires features this library lacks
 
     if(len) { // read filename
         if(header->fileNameLength >= len)

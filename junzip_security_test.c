@@ -108,12 +108,13 @@ static void zb_put(ZipBuf *z, const void *p, size_t n) {
     z->len += n;
 }
 
-static void zb_local(ZipBuf *z, const char *name, uint16_t flags,
-        uint16_t method, uint32_t crc, uint32_t csize, uint32_t usize) {
+static void zb_local(ZipBuf *z, const char *name, uint16_t version,
+        uint16_t flags, uint16_t method, uint32_t crc, uint32_t csize,
+        uint32_t usize) {
     JZLocalFileHeader h;
     memset(&h, 0, sizeof(h));
     h.signature = 0x04034B50;
-    h.versionNeededToExtract = 20;
+    h.versionNeededToExtract = version;
     h.generalPurposeBitFlag = flags;
     h.compressionMethod = method;
     h.crc32 = crc;
@@ -124,14 +125,14 @@ static void zb_local(ZipBuf *z, const char *name, uint16_t flags,
     zb_put(z, name, strlen(name));
 }
 
-static void zb_central(ZipBuf *z, const char *name, uint16_t flags,
-        uint16_t method, uint32_t crc, uint32_t csize, uint32_t usize,
-        uint32_t offset) {
+static void zb_central(ZipBuf *z, const char *name, uint16_t version,
+        uint16_t flags, uint16_t method, uint32_t crc, uint32_t csize,
+        uint32_t usize, uint32_t offset) {
     JZGlobalFileHeader h;
     memset(&h, 0, sizeof(h));
     h.signature = 0x02014B50;
     h.versionMadeBy = 20;
-    h.versionNeededToExtract = 20;
+    h.versionNeededToExtract = version;
     h.generalPurposeBitFlag = flags;
     h.compressionMethod = method;
     h.crc32 = crc;
@@ -225,10 +226,10 @@ static void build_simple(ZipBuf *z, const char *name, uint16_t flags,
         const void *payload, size_t payloadLen) {
     size_t cdOffset;
     zb_reset(z);
-    zb_local(z, name, flags, method, crc, csize, usize);
+    zb_local(z, name, 20, flags, method, crc, csize, usize);
     zb_put(z, payload, payloadLen);
     cdOffset = zb_pos(z);
-    zb_central(z, name, flags, method, crc, csize, usize, 0);
+    zb_central(z, name, 20, flags, method, crc, csize, usize, 0);
     zb_endrecord(z, 1, (uint32_t)(zb_pos(z) - cdOffset), (uint32_t)cdOffset, 0);
 }
 
@@ -322,12 +323,12 @@ static void test_deflate_trailing_garbage(void) {
 
     // compressedSize padded beyond the actual deflate stream.
     zb_reset(&z);
-    zb_local(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN + 4, FIX_LEN);
+    zb_local(&z, "a.txt", 20, 0, 8, FIX_CRC, FIX_DEFLATE_LEN + 4, FIX_LEN);
     zb_put(&z, fix_deflate, FIX_DEFLATE_LEN);
     zb_put(&z, "JUNK", 4);
     {
         size_t cdOffset = zb_pos(&z);
-        zb_central(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN + 4, FIX_LEN, 0);
+        zb_central(&z, "a.txt", 20, 0, 8, FIX_CRC, FIX_DEFLATE_LEN + 4, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
@@ -356,12 +357,12 @@ static void test_datadesc_ok(void) {
 
     // Bit 3 set: local header carries zeros, descriptor carries real values.
     zb_reset(&z);
-    zb_local(&z, "dd.txt", 0x08, 0, 0, 0, 0);
+    zb_local(&z, "dd.txt", 20, 0x08, 0, 0, 0, 0);
     zb_put(&z, fix_data, FIX_LEN);
     zb_datadesc(&z, FIX_CRC, FIX_LEN, FIX_LEN);
     {
         size_t cdOffset = zb_pos(&z);
-        zb_central(&z, "dd.txt", 0x08, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
+        zb_central(&z, "dd.txt", 20, 0x08, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_OK);
@@ -378,12 +379,12 @@ static void test_datadesc_lying_size(void) {
     // descriptor overwrote header->uncompressedSize and callers then read
     // far past their buffer (heap disclosure / ASan heap-buffer-overflow).
     zb_reset(&z);
-    zb_local(&z, "dd.txt", 0x08, 0, 0, 0, 0);
+    zb_local(&z, "dd.txt", 20, 0x08, 0, 0, 0, 0);
     zb_put(&z, fix_data, FIX_LEN);
     zb_datadesc(&z, FIX_CRC, FIX_LEN, 0x100000);
     {
         size_t cdOffset = zb_pos(&z);
-        zb_central(&z, "dd.txt", 0x08, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
+        zb_central(&z, "dd.txt", 20, 0x08, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
 
@@ -416,12 +417,12 @@ static void test_datadesc_lying_crc(void) {
     uint32_t produced;
 
     zb_reset(&z);
-    zb_local(&z, "dd.txt", 0x08, 0, 0, 0, 0);
+    zb_local(&z, "dd.txt", 20, 0x08, 0, 0, 0, 0);
     zb_put(&z, fix_data, FIX_LEN);
     zb_datadesc(&z, FIX_CRC ^ 1, FIX_LEN, FIX_LEN);
     {
         size_t cdOffset = zb_pos(&z);
-        zb_central(&z, "dd.txt", 0x08, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
+        zb_central(&z, "dd.txt", 20, 0x08, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
@@ -480,11 +481,11 @@ static void test_truncated_archive(void) {
     // Structure intact, but the deflate payload is shorter than claimed:
     // reads run into the central directory and must still fail cleanly.
     zb_reset(&z);
-    zb_local(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN);
+    zb_local(&z, "a.txt", 20, 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN);
     zb_put(&z, fix_deflate, 5); // only 5 of the claimed 19 bytes present
     {
         size_t cdOffset = zb_pos(&z);
-        zb_central(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN, 0);
+        zb_central(&z, "a.txt", 20, 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) != JZ_OK);
@@ -496,6 +497,163 @@ static void test_crc32_vectors(void) {
     EXPECT(jz_crc32(0, fix_data, FIX_LEN) == FIX_CRC);
     // Chunked use must match single-shot.
     EXPECT(jz_crc32(jz_crc32(0, "1234", 4), "56789", 5) == 0xCBF43926UL);
+}
+
+// ---------------------------------------------------------------------------
+// Tests: archive structure validation (end record, central directory)
+// ---------------------------------------------------------------------------
+
+static int parse_er(const void *bytes, size_t len, JZEndRecord *er) {
+    MemJZFile m;
+    mem_init(&m, bytes, len);
+    return jzReadEndRecord(&m.handle, er);
+}
+
+static int parse_cd(const void *bytes, size_t len) {
+    MemJZFile m;
+    JZEndRecord er;
+    int ret;
+    mem_init(&m, bytes, len);
+    if((ret = jzReadEndRecord(&m.handle, &er)) != JZ_OK)
+        return ret;
+    return jzReadCentralDirectory(&m.handle, &er, capture_cb, NULL);
+}
+
+static void test_empty_zip_valid(void) {
+    ZipBuf z;
+    JZEndRecord er;
+
+    // A 22-byte end record with no entries is a valid empty archive.
+    zb_reset(&z);
+    zb_endrecord(&z, 0, 0, 0, 0);
+    EXPECT(z.len == sizeof(JZEndRecord));
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_OK);
+    EXPECT(er.numEntries == 0);
+    EXPECT(parse_cd(z.bytes, z.len) == JZ_OK);
+}
+
+static void test_max_comment(void) {
+    ZipBuf z;
+    JZEndRecord er;
+    unsigned char out[64];
+    uint32_t produced = 0;
+
+    // A maximum-length comment pushes the end record 65557 bytes from EOF;
+    // the scan window must cover it.
+    zb_reset(&z);
+    zb_local(&z, "a.txt", 20, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN);
+    zb_put(&z, fix_data, FIX_LEN);
+    {
+        size_t cdOffset = zb_pos(&z);
+        zb_central(&z, "a.txt", 20, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
+        zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset),
+                (uint32_t)cdOffset, 65535);
+    }
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_OK);
+    EXPECT(er.zipCommentLength == 65535);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_OK);
+    EXPECT(produced == FIX_LEN);
+}
+
+static void test_cd_offset_size_wrap(void) {
+    ZipBuf z;
+    JZEndRecord er;
+
+    // centralDirectoryOffset + centralDirectorySize wraps in 32 bits:
+    // 0xFFFFFFF0 + 0x20 == 0x10, which would pass a wrapping bounds check.
+    zb_reset(&z);
+    zb_put(&z, "PPPPPPPPPPPPPPPPPPPP", 20);
+    zb_endrecord(&z, 1, 0x20, 0xFFFFFFF0, 0);
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_ERR_CORRUPT);
+}
+
+static void test_cd_beyond_endrecord(void) {
+    ZipBuf z;
+    JZEndRecord er;
+
+    // Central directory overlapping the end record position.
+    zb_reset(&z);
+    zb_put(&z, "PPPPPPPPPPPPPPPPPPPP", 20);
+    zb_endrecord(&z, 0, 64, 12, 0); // cd 12..76, but ER starts at 20
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_ERR_CORRUPT);
+}
+
+static void test_numentries_overcount(void) {
+    ZipBuf z;
+    JZEndRecord er;
+
+    // One real entry in the directory, but the end record claims 100:
+    // 100 * sizeof(JZGlobalFileHeader) cannot fit in the declared size.
+    zb_reset(&z);
+    zb_local(&z, "a.txt", 20, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN);
+    zb_put(&z, fix_data, FIX_LEN);
+    {
+        size_t cdOffset = zb_pos(&z);
+        zb_central(&z, "a.txt", 20, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
+        zb_endrecord(&z, 100, (uint32_t)(zb_pos(&z) - cdOffset),
+                (uint32_t)cdOffset, 0);
+    }
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_ERR_CORRUPT);
+}
+
+static void test_cd_entry_overrun(void) {
+    ZipBuf z;
+    JZEndRecord er;
+
+    // Central header claims a 1000-byte filename, but the declared
+    // directory only holds the fixed-size header.
+    zb_reset(&z);
+    zb_local(&z, "a.txt", 20, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN);
+    zb_put(&z, fix_data, FIX_LEN);
+    {
+        JZGlobalFileHeader gh;
+        size_t cdOffset = zb_pos(&z);
+        memset(&gh, 0, sizeof(gh));
+        gh.signature = 0x02014B50;
+        gh.versionMadeBy = 20;
+        gh.versionNeededToExtract = 20;
+        gh.crc32 = FIX_CRC;
+        gh.compressedSize = FIX_LEN;
+        gh.uncompressedSize = FIX_LEN;
+        gh.fileNameLength = 1000;
+        zb_put(&z, &gh, sizeof(gh)); // no filename bytes follow
+        zb_endrecord(&z, 1, (uint32_t)sizeof(gh), (uint32_t)cdOffset, 0);
+    }
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_OK); // structurally fine
+    EXPECT(parse_cd(z.bytes, z.len) == JZ_ERR_CORRUPT); // iteration bounded
+}
+
+static void test_zip64_endrecord(void) {
+    ZipBuf z;
+    JZEndRecord er;
+
+    zb_reset(&z);
+    zb_endrecord(&z, 0xFFFF, 0, 0, 0);
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_ERR_UNSUPPORTED);
+
+    zb_reset(&z);
+    zb_endrecord(&z, 0, 0xFFFFFFFF, 0, 0);
+    EXPECT(parse_er(z.bytes, z.len, &er) == JZ_ERR_UNSUPPORTED);
+}
+
+static void test_version_rejected(void) {
+    ZipBuf z;
+    unsigned char out[64];
+    uint32_t produced;
+
+    // versionNeededToExtract 51 implies features (e.g. strong encryption)
+    // this library does not implement; fail early and loudly.
+    zb_reset(&z);
+    zb_local(&z, "a.txt", 51, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN);
+    zb_put(&z, fix_data, FIX_LEN);
+    {
+        size_t cdOffset = zb_pos(&z);
+        zb_central(&z, "a.txt", 51, 0, 0, FIX_CRC, FIX_LEN, FIX_LEN, 0);
+        zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset),
+                (uint32_t)cdOffset, 0);
+    }
+    EXPECT(parse_cd(z.bytes, z.len) == JZ_ERR_UNSUPPORTED);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_UNSUPPORTED);
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +676,14 @@ int main(void) {
     test_unknown_method_rejected();
     test_empty_entries();
     test_truncated_archive();
+    test_empty_zip_valid();
+    test_max_comment();
+    test_cd_offset_size_wrap();
+    test_cd_beyond_endrecord();
+    test_numentries_overcount();
+    test_cd_entry_overrun();
+    test_zip64_endrecord();
+    test_version_rejected();
 
     printf("%d checks, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
