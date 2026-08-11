@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <string.h>
 
 #include "junzip.h"
 
@@ -75,6 +76,11 @@ int main(int argc, char *argv[]) {
                 jzGlobalHeader.fileNameLength) {
             fprintf(stderr, "Couldn't read filename %d!", i);
             return Z_ERRNO;
+        }
+
+        if(memchr(filename, '\0', jzGlobalHeader.fileNameLength) != NULL) {
+            fprintf(stderr, "Embedded NUL in filename %d!\n", i);
+            goto endClose;
         }
 
         filename[jzGlobalHeader.fileNameLength] = '\0'; // NULL terminate

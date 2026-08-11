@@ -39,7 +39,7 @@ static void report_failure(ExtractContext *context, const char *message) {
 static int safe_entry_name(const char *filename) {
     size_t length, start, i;
 
-    if(filename == NULL || filename[0] == '\0' ||
+    if(!jzFilenameIsSafe(filename) ||
             filename[0] == '/' || filename[0] == '\\' ||
             strchr(filename, '\\') != NULL || strchr(filename, ':') != NULL)
         return 0;
@@ -128,7 +128,7 @@ static int write_file(int rootfd, const char *filename, const void *data,
     FILE *out;
     int ok = 1;
 
-    if(!safe_entry_name(filename)) {
+    if((bytes > 0 && data == NULL) || !safe_entry_name(filename)) {
         fprintf(stderr, "Rejected unsafe filename: %s\n", filename);
         return -1;
     }
@@ -392,7 +392,7 @@ static void win_report_failure(WinExtractContext *context, const char *message) 
 static int win_safe_entry_name(const char *filename) {
     size_t length, start, i;
 
-    if(filename == NULL || filename[0] == '\0' ||
+    if(!jzFilenameIsSafe(filename) ||
             filename[0] == '/' || filename[0] == '\\' ||
             strchr(filename, '\\') != NULL || strchr(filename, ':') != NULL)
         return 0;
@@ -494,7 +494,7 @@ static int win_write_file(const char *root, const char *filename,
     size_t remaining = bytes;
     const unsigned char *cursor = (const unsigned char *)data;
 
-    if(!win_safe_entry_name(filename)) {
+    if((bytes > 0 && data == NULL) || !win_safe_entry_name(filename)) {
         fprintf(stderr, "Rejected unsafe filename: %s\n", filename);
         return -1;
     }

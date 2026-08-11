@@ -41,30 +41,49 @@ utilities in one go:
 
 ```
 make
+make check
 ```
 
 You can make the zlib-enabled versions easily as well to get fast
 decompression and compression support to `jzip_demo` (not just store):
 
 ```
+make clean
 make HAVE_ZLIB=1
+make HAVE_ZLIB=1 check
 ```
 
 Or the lighter but bit slower `puff.c` powered decompression without the
 zlib dependency (and no compression, just store in `jzip_demo`):
 
 ```
+make clean
 make HAVE_PUFF=1
+make HAVE_PUFF=1 check
 ```
+
+The regression suite can also be run with both decompression backends under
+ASan and UBSan:
+
+```
+make sanitize
+```
+
+On systems with the libFuzzer runtime, `make fuzz` builds the permanent parser
+harness. `make fuzz-smoke` builds a standalone sanitizer-backed mutation and
+truncation runner that accepts a ZIP seed path.
+
+Clean between backend changes so object files built with different feature
+defines are not mixed.
 
 A small `make_clang.bat` is also provided just for laughs.
 
 # Included executables
 
 *Warning*: `jzip_demo` overwrites its output file. The `junzip_demo` refuses
-existing output files, symlinked path components, and reparse-point paths; it
-never follows them outside the destination directory. Choose a destination
-directory with appropriate ownership and permissions.
+existing output files and observed symlink/reparse-point path components.
+Extraction must still use a destination directory that an attacker cannot
+modify concurrently; otherwise directory rename races can defeat containment.
 
 * `junzip_demo file.zip destination-directory` extracts `file.zip`
 * `jzip_demo file1 file2 output.zip` creates a zip file
@@ -81,8 +100,11 @@ entry, and 1 GiB total uncompressed output. The whole-entry `jzReadData` API
 still requires callers to apply their own equivalent resource limits;
 `jzReadDataLimited` can enforce the compressed-size limit before decoding.
 
-The POSIX demo uses `openat()`/`mkdirat()` semantics. The Windows demo also
-runs, but uses a conservative policy that rejects reparse-point components and
-existing targets because the Win32 API lacks a direct `openat()` equivalent.
+The POSIX demo uses `openat()`/`mkdirat()` semantics, which blocks ordinary
+pre-existing symlink traversal. The Windows demo uses a conservative policy
+that rejects observed reparse-point components and existing targets because the
+Win32 API lacks a direct `openat()` equivalent. Its component checks and later
+child opens are separate operations. On both platforms, treat a private
+destination as part of the extraction security contract.
 
 Github: https://github.com/jokkebk/JUnzip

@@ -129,31 +129,39 @@ typedef struct __attribute__ ((__packed__)) {
 typedef int (*JZRecordCallback)(JZFile *zip, int index, JZFileHeader *header,
         char *filename, void *user_data);
 
-// Maximum ZIP filename length representable by the classic ZIP format.
+// Maximum ZIP filename length representable by the classic ZIP format. The
+// library holds no global mutable state; distinct JZFile instances may be used
+// concurrently. A single JZFile still requires backend-provided synchronization
+// if multiple threads access it.
 #define JZ_MAX_FILENAME_LENGTH 65535
 
-// Read ZIP file end record. Will move within file.
+// Read ZIP file end record. Will move within file. ZIP64 and multi-disk
+// archives are rejected as unsupported.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord);
 
-// Read ZIP file global directory. Will move within file.
-// Callback is called for each record, until callback returns zero
+// Read ZIP file global directory. Will move within file. Callback is called
+// for each record, until callback returns zero. The filename pointer is valid
+// only during the callback and contains no embedded NUL bytes.
 int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         JZRecordCallback callback, void *user_data);
 
-// Read local ZIP file header. This legacy function updates header with local
-// values when the data-descriptor flag is clear. Callers that have validated
-// central-directory metadata should use jzReadLocalFileHeaderChecked instead.
+// Read a local ZIP header and reconcile it with central-directory values
+// already stored in *header. Duplicated flags, method, CRC and sizes must
+// agree; central-directory security values remain authoritative. This does
+// not compare the filename, so extraction code should normally use the
+// checked variant below.
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
         char *filename, int len);
 
-// Same as above but returns the full raw header
+// Read the raw local header without central-directory reconciliation.
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
 
 // Read a local header and verify it against the already validated central
 // header. The central header is never modified. The local filename is checked
 // byte-for-byte against centralFilename, as are the method, flags, version,
-// and (when bit 3 is clear) CRC and sizes.
+// and CRC and sizes. With bit 3 set, zero local CRC/size fields are accepted,
+// but nonzero fields must agree with the central values.
 int jzReadLocalFileHeaderChecked(JZFile *zip, JZFileHeader *centralHeader,
         const char *centralFilename);
 
@@ -161,6 +169,13 @@ int jzReadLocalFileHeaderChecked(JZFile *zip, JZFileHeader *centralHeader,
 // which decompression backend (if any) is compiled in. Compatible with
 // zlib's crc32() calling convention: pass crc=0 for a single-shot checksum.
 uint32_t jz_crc32(uint32_t crc, const void *data, size_t size);
+
+// Validate an archived filename as a relative path. Both '/' and '\\' are
+// treated as separators. Empty/absolute paths, drive letters, empty, '.' or
+// '..' components, and control characters are rejected. This is lexical
+// validation only: filesystem extraction must additionally anchor resolution
+// at a destination directory and refuse symlink/reparse-point traversal.
+int jzFilenameIsSafe(const char *filename);
 
 // Read data from file stream, described by header, to preallocated buffer.
 // Returns JZ_OK (zero) on success, negative JZ_ERR_* code on failure.

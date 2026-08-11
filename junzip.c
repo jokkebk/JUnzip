@@ -35,6 +35,48 @@ uint32_t jz_crc32(uint32_t crc, const void *data, size_t size) {
     return crc ^ 0xFFFFFFFFUL;
 }
 
+int jzFilenameIsSafe(const char *filename) {
+    const char *p = filename;
+    const char *component = filename;
+    size_t componentLength = 0;
+
+    if(p == NULL || *p == '\0' || *p == '/' || *p == '\\')
+        return 0;
+
+    if(((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) &&
+            p[1] == ':')
+        return 0;
+
+    for(; *p != '\0'; p++) {
+        if((unsigned char)*p < 32 || *p == 0x7f || *p == ':')
+            return 0;
+
+        if(*p == '/' || *p == '\\') {
+            if(componentLength == 0)
+                return 0;
+            if((componentLength == 1 && component[0] == '.') ||
+                    (componentLength == 2 && component[0] == '.' &&
+                     component[1] == '.'))
+                return 0;
+            component = p + 1;
+            componentLength = 0;
+        } else {
+            componentLength++;
+        }
+    }
+
+    // A single trailing separator is a valid directory entry.
+    if(componentLength == 0)
+        return p > filename && (p[-1] == '/' || p[-1] == '\\');
+
+    if((componentLength == 1 && component[0] == '.') ||
+            (componentLength == 2 && component[0] == '.' &&
+             component[1] == '.'))
+        return 0;
+
+    return 1;
+}
+
 // The end record sits at most 22 + 65535 (maximum comment) bytes from EOF.
 #define JZ_ENDRECORD_WINDOW (sizeof(JZEndRecord) + 65535U)
 
@@ -62,17 +104,21 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
     JZOffset fileSize, erPos = 0;
     size_t readBytes, i;
     unsigned char *window;
-    int retval = Z_ERRNO;
+    int retval = JZ_ERR;
+
+    if(zip == NULL || endRecord == NULL || zip->seek == NULL ||
+            zip->tell == NULL || zip->read == NULL)
+        return JZ_ERR;
 
     if(zip->seek(zip, 0, SEEK_END)) {
         fprintf(stderr, "Couldn't go to end of zip file!");
-        return Z_ERRNO;
+        return JZ_ERR;
     }
 
     // A valid empty archive is exactly sizeof(JZEndRecord) bytes.
     if(zip->tell(zip, &fileSize) || fileSize < sizeof(JZEndRecord)) {
         fprintf(stderr, "Too small file to be a zip!");
-        return Z_ERRNO;
+        return JZ_ERR;
     }
 
     readBytes = (fileSize < JZ_ENDRECORD_WINDOW) ?
@@ -80,7 +126,7 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
 
     if((window = (unsigned char *)malloc(readBytes)) == NULL) {
         fprintf(stderr, "Couldn't allocate end record scan buffer!");
-        return Z_ERRNO;
+        return JZ_ERR;
     }
 
     if(zip->seek(zip, (int64_t)(fileSize - readBytes), SEEK_SET)) {
@@ -108,13 +154,13 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
                     candidatePos + trailerSize == fileSize) {
                 erPos = candidatePos;
                 *endRecord = candidate;
-                retval = Z_OK;
+                retval = JZ_OK;
                 break;
             }
         }
     }
 
-    if(retval != Z_OK) {
+    if(retval != JZ_OK) {
         fprintf(stderr, "End record signature not found in zip!");
         goto done;
     }
@@ -122,7 +168,7 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
     if(endRecord->diskNumber || endRecord->centralDirectoryDiskNumber ||
             endRecord->numEntries != endRecord->numEntriesThisDisk) {
         fprintf(stderr, "Multifile zips not supported!");
-        retval = Z_ERRNO;
+        retval = JZ_ERR_UNSUPPORTED;
         goto done;
     }
 
@@ -163,13 +209,19 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         JZRecordCallback callback, void *user_data) {
     JZGlobalFileHeader fileHeader;
     JZFileHeader header;
-    uint64_t remaining = endRecord->centralDirectorySize;
+    uint64_t remaining;
     char *filename;
     int i, keepGoing;
 
+    if(zip == NULL || endRecord == NULL || callback == NULL ||
+            zip->seek == NULL || zip->read == NULL)
+        return JZ_ERR;
+
+    remaining = endRecord->centralDirectorySize;
+
     if(zip->seek(zip, endRecord->centralDirectoryOffset, SEEK_SET)) {
         fprintf(stderr, "Cannot seek in zip file!");
-        return Z_ERRNO;
+        return JZ_ERR;
     }
 
     for(i=0; i<endRecord->numEntries; i++) {
@@ -181,13 +233,13 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         if(zip->read(zip, &fileHeader, sizeof(JZGlobalFileHeader)) <
                 sizeof(JZGlobalFileHeader)) {
             fprintf(stderr, "Couldn't read file header %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
         remaining -= sizeof(JZGlobalFileHeader);
 
         if(fileHeader.signature != 0x02014B50) {
             fprintf(stderr, "Invalid file header signature %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR_CORRUPT;
         }
 
         if(fileHeader.versionNeededToExtract > 20) {
@@ -208,6 +260,12 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
             return JZ_ERR_UNSUPPORTED;
         }
 
+        if(fileHeader.relativeOffsetOflocalHeader >=
+                endRecord->centralDirectoryOffset) {
+            fprintf(stderr, "Entry %d local header overlaps metadata!", i);
+            return JZ_ERR_CORRUPT;
+        }
+
         if(jzValidateEntryFlags(fileHeader.generalPurposeBitFlag,
                     fileHeader.compressionMethod) != JZ_OK) {
             fprintf(stderr, "Unsupported flags or method on entry %d!", i);
@@ -223,14 +281,14 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
 
         if((filename = (char *)malloc(fileHeader.fileNameLength + 1)) == NULL) {
             fprintf(stderr, "Couldn't allocate filename %d!", i);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
 
         if(zip->read(zip, filename, fileHeader.fileNameLength) <
                 fileHeader.fileNameLength) {
             fprintf(stderr, "Couldn't read filename %d!", i);
             free(filename);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
         remaining -= fileHeader.fileNameLength;
 
@@ -246,7 +304,7 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
                 zip->seek(zip, fileHeader.fileCommentLength, SEEK_CUR)) {
             fprintf(stderr, "Couldn't skip extra field or file comment %d", i);
             free(filename);
-            return Z_ERRNO;
+            return JZ_ERR;
         }
         remaining -= (uint64_t)fileHeader.extraFieldLength +
             fileHeader.fileCommentLength;
@@ -275,19 +333,24 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         return JZ_ERR_CORRUPT;
     }
 
-    return Z_OK;
+    return JZ_OK;
 }
 
 // Read local ZIP file header. Silent on errors so optimistic reading possible.
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len) {
 
+    if(zip == NULL || header == NULL || zip->read == NULL ||
+            zip->seek == NULL || len < 0 ||
+            (len > 0 && filename == NULL))
+        return JZ_ERR;
+
     if(zip->read(zip, header, sizeof(JZLocalFileHeader)) <
             sizeof(JZLocalFileHeader))
-        return Z_ERRNO;
+        return JZ_ERR;
 
     if(header->signature != 0x04034B50)
-        return Z_ERRNO;
+        return JZ_ERR_CORRUPT;
 
     if(header->versionNeededToExtract > 20)
         return JZ_ERR_UNSUPPORTED; // requires features this library lacks
@@ -298,29 +361,25 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
 
     if(len) { // read filename
         if(header->fileNameLength >= len)
-            return Z_ERRNO; // filename cannot fit
+            return JZ_ERR_SIZE; // filename cannot fit
 
         if(zip->read(zip, filename, header->fileNameLength) <
                 header->fileNameLength)
-            return Z_ERRNO; // read fail
-
-        filename[header->fileNameLength] = '\0'; // NULL terminate
+            return JZ_ERR; // read fail
 
         if(memchr(filename, '\0', header->fileNameLength) != NULL)
             return JZ_ERR_CORRUPT;
+
+        filename[header->fileNameLength] = '\0'; // NULL terminate
     } else { // skip filename
         if(zip->seek(zip, header->fileNameLength, SEEK_CUR))
-            return Z_ERRNO;
+            return JZ_ERR;
     }
 
     if(header->extraFieldLength) {
         if(zip->seek(zip, header->extraFieldLength, SEEK_CUR))
-            return Z_ERRNO;
+            return JZ_ERR;
     }
-
-    // For now, silently ignore bit flags and hope ZLIB can uncompress
-    // if(header->generalPurposeBitFlag)
-    //     return Z_ERRNO; // Flags not supported
 
     if(header->compressedSize == 0xFFFFFFFF ||
             header->uncompressedSize == 0xFFFFFFFF)
@@ -330,7 +389,7 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
             (header->compressedSize != header->uncompressedSize))
         return JZ_ERR_CORRUPT; // Method is "store" but sizes indicate otherwise
 
-    return Z_OK;
+    return JZ_OK;
 }
 
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
@@ -338,27 +397,36 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
     JZLocalFileHeader localHeader;
     int ret;
 
-    if((ret = jzReadLocalFileHeaderRaw(zip, &localHeader, filename, len)) != Z_OK)
+    if(header == NULL)
+        return JZ_ERR;
+
+    if((ret = jzReadLocalFileHeaderRaw(zip, &localHeader, filename, len)) !=
+            JZ_OK)
         return ret;
 
-    header->versionNeededToExtract = localHeader.versionNeededToExtract;
-    header->generalPurposeBitFlag = localHeader.generalPurposeBitFlag;
-    header->compressionMethod = localHeader.compressionMethod;
+    if(localHeader.versionNeededToExtract != header->versionNeededToExtract ||
+            localHeader.generalPurposeBitFlag !=
+                header->generalPurposeBitFlag ||
+            localHeader.compressionMethod != header->compressionMethod)
+        return JZ_ERR_CORRUPT;
+
+    if(localHeader.generalPurposeBitFlag & 0x08) {
+        if((localHeader.crc32 != 0 && localHeader.crc32 != header->crc32) ||
+                (localHeader.compressedSize != 0 &&
+                 localHeader.compressedSize != header->compressedSize) ||
+                (localHeader.uncompressedSize != 0 &&
+                 localHeader.uncompressedSize != header->uncompressedSize))
+            return JZ_ERR_CORRUPT;
+    } else if(localHeader.crc32 != header->crc32 ||
+            localHeader.compressedSize != header->compressedSize ||
+            localHeader.uncompressedSize != header->uncompressedSize) {
+        return JZ_ERR_CORRUPT;
+    }
+
     header->lastModFileTime = localHeader.lastModFileTime;
     header->lastModFileDate = localHeader.lastModFileDate;
 
-    // When bit 3 is set, the local header carries no sizes/CRC (they follow
-    // the file data in a data descriptor); keep the caller-provided central
-    // directory values. Otherwise the local header is authoritative.
-    if(!(localHeader.generalPurposeBitFlag & 0x08)) {
-        header->crc32 = localHeader.crc32;
-        header->compressedSize = localHeader.compressedSize;
-        header->uncompressedSize = localHeader.uncompressedSize;
-    }
-
-    header->offset = 0; // not used in local context
-
-    return Z_OK;
+    return JZ_OK;
 }
 
 int jzReadLocalFileHeaderChecked(JZFile *zip, JZFileHeader *centralHeader,
@@ -381,7 +449,7 @@ int jzReadLocalFileHeaderChecked(JZFile *zip, JZFileHeader *centralHeader,
 
     ret = jzReadLocalFileHeaderRaw(zip, &localHeader, localFilename,
             JZ_MAX_FILENAME_LENGTH + 1);
-    if(ret != Z_OK) {
+    if(ret != JZ_OK) {
         free(localFilename);
         return ret;
     }
@@ -393,16 +461,25 @@ int jzReadLocalFileHeaderChecked(JZFile *zip, JZFileHeader *centralHeader,
             localHeader.generalPurposeBitFlag !=
                 centralHeader->generalPurposeBitFlag ||
             localHeader.compressionMethod != centralHeader->compressionMethod ||
-            (!(localHeader.generalPurposeBitFlag & 0x08) &&
+            ((localHeader.generalPurposeBitFlag & 0x08) ?
+                ((localHeader.crc32 != 0 &&
+                  localHeader.crc32 != centralHeader->crc32) ||
+                 (localHeader.compressedSize != 0 &&
+                  localHeader.compressedSize !=
+                    centralHeader->compressedSize) ||
+                 (localHeader.uncompressedSize != 0 &&
+                  localHeader.uncompressedSize !=
+                    centralHeader->uncompressedSize)) :
                 (localHeader.crc32 != centralHeader->crc32 ||
                  localHeader.compressedSize != centralHeader->compressedSize ||
-                 localHeader.uncompressedSize != centralHeader->uncompressedSize))) {
+                 localHeader.uncompressedSize !=
+                    centralHeader->uncompressedSize))) {
         free(localFilename);
         return JZ_ERR_CORRUPT;
     }
 
     free(localFilename);
-    return Z_OK;
+    return JZ_OK;
 }
 
 // Read and verify a trailing data descriptor (bit 3). The descriptor is
@@ -441,15 +518,19 @@ static int jzVerifyDataDescriptor(JZFile *zip, JZFileHeader *header) {
 int jzReadDataLimited(JZFile *zip, JZFileHeader *header, void *buffer,
         size_t bufferSize, uint32_t compressedSizeLimit,
         uint32_t *bytesProduced) {
-    int hasDataDescriptor = header->generalPurposeBitFlag & 0x08;
+    int hasDataDescriptor;
 
-    if(bytesProduced == NULL || (buffer == NULL && bufferSize > 0))
+    if(zip == NULL || header == NULL || bytesProduced == NULL ||
+            zip->read == NULL || zip->error == NULL ||
+            (buffer == NULL && bufferSize > 0))
         return JZ_ERR;
 
+    hasDataDescriptor = header->generalPurposeBitFlag & 0x08;
     *bytesProduced = 0;
 
-    if(header->generalPurposeBitFlag & 0x01)
-        return JZ_ERR_UNSUPPORTED; // encrypted entries not supported
+    if(jzValidateEntryFlags(header->generalPurposeBitFlag,
+                header->compressionMethod) != JZ_OK)
+        return JZ_ERR_UNSUPPORTED;
 
     if(header->compressedSize == 0xFFFFFFFF ||
             header->uncompressedSize == 0xFFFFFFFF)
@@ -480,6 +561,7 @@ int jzReadDataLimited(JZFile *zip, JZFileHeader *header, void *buffer,
 #ifdef HAVE_ZLIB
         z_stream strm;
         unsigned char inbuf[16384]; // bounded input chunks, never sized by archive
+        unsigned char dummyOut; // zlib rejects NULL even for zero output
         uint32_t remaining = header->compressedSize;
         int zret = Z_OK;
 
@@ -489,8 +571,10 @@ int jzReadDataLimited(JZFile *zip, JZFileHeader *header, void *buffer,
         if(inflateInit2(&strm, -MAX_WBITS) != Z_OK)
             return JZ_ERR;
 
-        strm.next_out = (unsigned char *)buffer;
-        strm.avail_out = header->uncompressedSize;
+        strm.next_out = header->uncompressedSize > 0 ?
+            (unsigned char *)buffer : &dummyOut;
+        strm.avail_out = header->uncompressedSize > 0 ?
+            header->uncompressedSize : 1;
 
         while(remaining > 0) {
             size_t chunk = remaining < sizeof(inbuf) ?
@@ -508,7 +592,9 @@ int jzReadDataLimited(JZFile *zip, JZFileHeader *header, void *buffer,
             zret = inflate(&strm, Z_NO_FLUSH);
             if(zret == Z_STREAM_END)
                 break;
-            if(zret != Z_OK || strm.avail_out == 0) {
+            if(zret != Z_OK ||
+                    (header->uncompressedSize == 0 ?
+                        strm.total_out != 0 : strm.avail_out == 0)) {
                 // corrupt stream, or more output than claimed
                 inflateEnd(&strm);
                 return JZ_ERR_CORRUPT;
@@ -651,7 +737,12 @@ stdio_read_file_handle_close(JZFile *file)
 JZFile *
 jzfile_from_stdio_file(FILE *fp)
 {
-    StdioJZFile *handle = (StdioJZFile *)malloc(sizeof(StdioJZFile));
+    StdioJZFile *handle;
+
+    if(fp == NULL)
+        return NULL;
+
+    handle = (StdioJZFile *)malloc(sizeof(StdioJZFile));
 
     if(handle == NULL) return NULL;
 

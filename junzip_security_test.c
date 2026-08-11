@@ -747,6 +747,20 @@ static void test_central_local_mismatch(void) {
     z.bytes[sizeof(JZLocalFileHeader)] = 'b';
     EXPECT(check_local_header(z.bytes, z.len) == JZ_ERR_CORRUPT);
 
+    // Under bit 3, zero local values are allowed, but contradictory nonzero
+    // values must not be accepted in place of the central-directory bounds.
+    zb_reset(&z);
+    zb_local(&z, "dd.txt", 20, 0x08, 0, 1, 0, 0);
+    zb_put(&z, fix_data, FIX_LEN);
+    zb_datadesc(&z, FIX_CRC, FIX_LEN, FIX_LEN);
+    {
+        size_t cdOffset = zb_pos(&z);
+        zb_central(&z, "dd.txt", 20, 0x08, 0, FIX_CRC, FIX_LEN,
+                FIX_LEN, 0);
+        zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset),
+                (uint32_t)cdOffset, 0);
+    }
+    EXPECT(check_local_header(z.bytes, z.len) == JZ_ERR_CORRUPT);
 }
 
 static void test_unsupported_entry_layout(void) {
@@ -765,6 +779,9 @@ static void test_unsupported_entry_layout(void) {
     central->diskNumberStart = 0;
     central->relativeOffsetOflocalHeader = 0xFFFFFFFF;
     EXPECT(parse_cd(z.bytes, z.len) == JZ_ERR_UNSUPPORTED);
+
+    central->relativeOffsetOflocalHeader = (uint32_t)cdOffset;
+    EXPECT(parse_cd(z.bytes, z.len) == JZ_ERR_CORRUPT);
 }
 
 static void test_trailing_central_bytes(void) {
@@ -786,6 +803,25 @@ static void test_trailing_central_bytes(void) {
         cdSize + 1;
     EXPECT(parse_cd_fully(z.bytes, z.len) == JZ_ERR_CORRUPT);
     EXPECT(cdOffset + cdSize + 1 == endRecordOffset + 1);
+}
+
+static void test_filename_safety(void) {
+    static const char *safe[] = {
+        "file.txt", "dir/file.txt", "a/b/c/d.e", "dir/",
+        "a..b", "..foo/bar", "foo.", NULL
+    };
+    static const char *unsafe[] = {
+        "", "/abs.txt", "\\abs.txt", "C:/win.txt", "c:\\win.txt",
+        "../evil", "..\\evil", "a/../b", "a\\..\\b", "a/./b",
+        "foo/..", "foo/.", "..", ".", "a//b", "dir//", "bad\tname",
+        "bad\x7Fname", "file:stream", NULL
+    };
+    int i;
+
+    for(i = 0; safe[i]; i++)
+        EXPECT(jzFilenameIsSafe(safe[i]) == 1);
+    for(i = 0; unsafe[i]; i++)
+        EXPECT(jzFilenameIsSafe(unsafe[i]) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +855,7 @@ int main(void) {
     test_central_local_mismatch();
     test_unsupported_entry_layout();
     test_trailing_central_bytes();
+    test_filename_safety();
 
     printf("%d checks, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;

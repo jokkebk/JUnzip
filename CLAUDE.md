@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make                # Build all executables (no compression support)
 make HAVE_ZLIB=1    # Build with zlib (fast decompression + compression)
 make HAVE_PUFF=1    # Build with puff.c (lighter decompression, no zlib dependency)
+make check          # Run struct and security regression tests
+make sanitize       # Run Puff and zlib tests under ASan/UBSan
+make fuzz           # Build optional libFuzzer harness (Clang runtime required)
+make fuzz-smoke     # Build standalone mutation/truncation harness
 make clean          # Remove object files and built binaries
 ```
 
@@ -20,11 +24,11 @@ On Windows/MinGW, the Makefile adds `-mno-ms-bitfields` automatically for correc
 
 ## Testing
 
-```bash
-make && ./junzip_test   # Verifies struct sizes match ZIP spec (30, 46, 26, 22 bytes)
-```
-
-There is no test framework; `junzip_test.c` is a simple size-check executable.
+`make check`, `make HAVE_PUFF=1 check`, and `make HAVE_ZLIB=1 check` cover the
+store-only and both Deflate configurations. `junzip_security_test.c` builds
+hostile archives in memory; `junzip_fuzz.c` provides libFuzzer and standalone
+smoke modes. Clean before switching backends so differently compiled objects
+are not reused.
 
 ## Architecture
 
@@ -47,6 +51,8 @@ JUnzip is a minimalistic C library for reading and writing ZIP files. The entire
 - **jzip_demo.c** — Zip creator: builds ZIP from input files (store-only without zlib, compressed with zlib)
 - **junzip_dump.c** — Debug tool: dumps all local + global headers and end record fields
 - **junzip_test.c** — Struct size verification
+- **junzip_security_test.c** — In-memory malicious-archive regression suite
+- **junzip_fuzz.c** — Optional parser/extraction fuzz harness
 
 ### Key patterns
 
@@ -57,3 +63,5 @@ JUnzip is a minimalistic C library for reading and writing ZIP files. The entire
 - `JZFile` uses checked 64-bit positions; `tell` reports failure explicitly
 - `jzReadLocalFileHeaderChecked` compares local metadata with the central header before extraction
 - Callers must impose independent entry-count, compressed-size, uncompressed-size, and aggregate-output limits before allocating for `jzReadData`
+- `SecurityAnalysis.md` records the original vulnerability analysis;
+  `SecurityReview.md` records the post-reconciliation residual-risk review
