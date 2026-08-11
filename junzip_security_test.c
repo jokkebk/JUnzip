@@ -15,6 +15,12 @@
 
 static int tests_run = 0, tests_failed = 0;
 
+#if defined(HAVE_ZLIB) || defined(HAVE_PUFF)
+#define EXPECT_DEFLATE_SUCCESS 1
+#else
+#define EXPECT_DEFLATE_SUCCESS 0
+#endif
+
 #define EXPECT(cond) do { \
         tests_run++; \
         if(!(cond)) { \
@@ -43,19 +49,28 @@ static size_t mem_read(JZFile *f, void *buf, size_t size) {
     return n;
 }
 
-static size_t mem_tell(JZFile *f) {
-    return ((MemJZFile *)f)->pos;
+static int mem_tell(JZFile *f, JZOffset *offset) {
+    if(offset == NULL)
+        return -1;
+    *offset = ((MemJZFile *)f)->pos;
+    return 0;
 }
 
-static int mem_seek(JZFile *f, size_t offset, int whence) {
+static int mem_seek(JZFile *f, int64_t offset, int whence) {
     MemJZFile *m = (MemJZFile *)f;
-    uint64_t base =
+    int64_t base =
         (whence == SEEK_SET) ? 0 :
-        (whence == SEEK_CUR) ? m->pos :
-        (whence == SEEK_END) ? m->size : 0;
-    uint64_t newpos = base + offset;
-    if(whence < SEEK_SET || whence > SEEK_END || newpos > 0x7FFFFFFFULL)
+        (whence == SEEK_CUR) ? (int64_t)m->pos :
+        (whence == SEEK_END) ? (int64_t)m->size : 0;
+    int64_t newpos;
+
+    if(whence < SEEK_SET || whence > SEEK_END ||
+            (offset > 0 && base > INT64_MAX - offset) ||
+            (offset < 0 && base < INT64_MIN - offset))
         return -1; // mimic fseek failing on absurd positions
+    newpos = base + offset;
+    if(newpos < 0 || (uint64_t)newpos > 0x7FFFFFFFULL)
+        return -1;
     m->pos = (size_t)newpos; // seeking beyond end is allowed, reads then fail
     return 0;
 }
@@ -201,8 +216,8 @@ static int capture_cb(JZFile *zip, int index, JZFileHeader *header,
 // Parse end record + central directory, seek to the first entry's local
 // header, and extract its data. Returns the jzReadData() result, or the
 // first error encountered along the way.
-static int run_extract(const void *zipBytes, size_t zipLen, void *out,
-        size_t outSize, uint32_t *produced) {
+static int run_extract_limited(const void *zipBytes, size_t zipLen, void *out,
+        size_t outSize, uint32_t compressedLimit, uint32_t *produced) {
     MemJZFile m;
     JZEndRecord er;
     int ret;
@@ -213,11 +228,18 @@ static int run_extract(const void *zipBytes, size_t zipLen, void *out,
         return ret;
     if((ret = jzReadCentralDirectory(&m.handle, &er, capture_cb, NULL)) != JZ_OK)
         return ret;
-    if(m.handle.seek(&m.handle, g_header.offset, SEEK_SET))
+    if(m.handle.seek(&m.handle, (int64_t)g_header.offset, SEEK_SET))
         return JZ_ERR;
     if((ret = jzReadLocalFileHeader(&m.handle, &g_header, NULL, 0)) != JZ_OK)
         return ret;
-    return jzReadData(&m.handle, &g_header, out, outSize, produced);
+    return jzReadDataLimited(&m.handle, &g_header, out, outSize,
+            compressedLimit, produced);
+}
+
+static int run_extract(const void *zipBytes, size_t zipLen, void *out,
+        size_t outSize, uint32_t *produced) {
+    return run_extract_limited(zipBytes, zipLen, out, outSize, UINT32_MAX,
+            produced);
 }
 
 // Build a one-entry archive: local header + payload + central + end record.
@@ -271,10 +293,14 @@ static void test_store_crc_mismatch(void) {
 static void test_buffer_too_small(void) {
     ZipBuf z;
     unsigned char out[16];
+    unsigned char fullOut[64];
     uint32_t produced;
 
     build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN, fix_data, FIX_LEN);
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_SIZE);
+
+    EXPECT(run_extract_limited(z.bytes, z.len, fullOut, sizeof(fullOut),
+            FIX_LEN - 1, &produced) == JZ_ERR_SIZE);
 
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN,
             fix_deflate, FIX_DEFLATE_LEN);
@@ -288,9 +314,14 @@ static void test_deflate_roundtrip(void) {
 
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, FIX_LEN,
             fix_deflate, FIX_DEFLATE_LEN);
+#if EXPECT_DEFLATE_SUCCESS
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_OK);
     EXPECT(produced == FIX_LEN);
     EXPECT(memcmp(out, fix_data, FIX_LEN) == 0);
+#else
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            JZ_ERR_UNSUPPORTED);
+#endif
 }
 
 static void test_deflate_short_production(void) {
@@ -302,7 +333,8 @@ static void test_deflate_short_production(void) {
     // rejected, not zero-padded or left uninitialized.
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, 1000,
             fix_deflate, FIX_DEFLATE_LEN);
-    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            (EXPECT_DEFLATE_SUCCESS ? JZ_ERR_CORRUPT : JZ_ERR_UNSUPPORTED));
 }
 
 static void test_deflate_over_production(void) {
@@ -313,7 +345,8 @@ static void test_deflate_over_production(void) {
     // Stream produces 32 bytes but only 4 are claimed (zip-bomb shape).
     build_simple(&z, "a.txt", 0, 8, FIX_CRC, FIX_DEFLATE_LEN, 4,
             fix_deflate, FIX_DEFLATE_LEN);
-    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            (EXPECT_DEFLATE_SUCCESS ? JZ_ERR_CORRUPT : JZ_ERR_UNSUPPORTED));
 }
 
 static void test_deflate_trailing_garbage(void) {
@@ -331,7 +364,8 @@ static void test_deflate_trailing_garbage(void) {
         zb_central(&z, "a.txt", 20, 0, 8, FIX_CRC, FIX_DEFLATE_LEN + 4, FIX_LEN, 0);
         zb_endrecord(&z, 1, (uint32_t)(zb_pos(&z) - cdOffset), (uint32_t)cdOffset, 0);
     }
-    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_CORRUPT);
+    EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+            (EXPECT_DEFLATE_SUCCESS ? JZ_ERR_CORRUPT : JZ_ERR_UNSUPPORTED));
 }
 
 static void test_zip64_sentinel(void) {
@@ -399,7 +433,7 @@ static void test_datadesc_lying_size(void) {
         mem_init(&m, z.bytes, z.len);
         EXPECT(jzReadEndRecord(&m.handle, &er) == JZ_OK);
         EXPECT(jzReadCentralDirectory(&m.handle, &er, capture_cb, NULL) == JZ_OK);
-        EXPECT(m.handle.seek(&m.handle, g_header.offset, SEEK_SET) == 0);
+        EXPECT(m.handle.seek(&m.handle, (int64_t)g_header.offset, SEEK_SET) == 0);
         EXPECT(jzReadLocalFileHeader(&m.handle, &g_header, NULL, 0) == JZ_OK);
 
         before = g_header;
@@ -463,8 +497,13 @@ static void test_empty_entries(void) {
     {
         static const unsigned char empty_deflate[] = { 0x03, 0x00 };
         build_simple(&z, "empty.txt", 0, 8, 0, 2, 0, empty_deflate, 2);
+#if EXPECT_DEFLATE_SUCCESS
         EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_OK);
         EXPECT(produced == 0);
+#else
+        EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) ==
+                JZ_ERR_UNSUPPORTED);
+#endif
     }
 }
 
@@ -517,6 +556,27 @@ static int parse_cd(const void *bytes, size_t len) {
     if((ret = jzReadEndRecord(&m.handle, &er)) != JZ_OK)
         return ret;
     return jzReadCentralDirectory(&m.handle, &er, capture_cb, NULL);
+}
+
+static int continue_cb(JZFile *zip, int index, JZFileHeader *header,
+        char *filename, void *user_data) {
+    (void)zip;
+    (void)index;
+    (void)header;
+    (void)filename;
+    (void)user_data;
+    return 1;
+}
+
+static int parse_cd_fully(const void *bytes, size_t len) {
+    MemJZFile m;
+    JZEndRecord er;
+    int ret;
+
+    mem_init(&m, bytes, len);
+    if((ret = jzReadEndRecord(&m.handle, &er)) != JZ_OK)
+        return ret;
+    return jzReadCentralDirectory(&m.handle, &er, continue_cb, NULL);
 }
 
 static void test_empty_zip_valid(void) {
@@ -656,6 +716,78 @@ static void test_version_rejected(void) {
     EXPECT(run_extract(z.bytes, z.len, out, sizeof(out), &produced) == JZ_ERR_UNSUPPORTED);
 }
 
+static int check_local_header(const void *bytes, size_t len) {
+    MemJZFile m;
+    JZEndRecord er;
+    int ret;
+
+    mem_init(&m, bytes, len);
+    if((ret = jzReadEndRecord(&m.handle, &er)) != JZ_OK)
+        return ret;
+    if((ret = jzReadCentralDirectory(&m.handle, &er, capture_cb, NULL)) != JZ_OK)
+        return ret;
+    if(m.handle.seek(&m.handle, (int64_t)g_header.offset, SEEK_SET))
+        return JZ_ERR;
+    return jzReadLocalFileHeaderChecked(&m.handle, &g_header, g_name);
+}
+
+static void test_central_local_mismatch(void) {
+    ZipBuf z;
+    JZLocalFileHeader *local;
+
+    build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN,
+            fix_data, FIX_LEN);
+    local = (JZLocalFileHeader *)z.bytes;
+    local->compressedSize = FIX_LEN - 1;
+    EXPECT(check_local_header(z.bytes, z.len) == JZ_ERR_CORRUPT);
+
+    build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN,
+            fix_data, FIX_LEN);
+    local = (JZLocalFileHeader *)z.bytes;
+    z.bytes[sizeof(JZLocalFileHeader)] = 'b';
+    EXPECT(check_local_header(z.bytes, z.len) == JZ_ERR_CORRUPT);
+
+}
+
+static void test_unsupported_entry_layout(void) {
+    ZipBuf z;
+    size_t cdOffset;
+    JZGlobalFileHeader *central;
+
+    build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN,
+            fix_data, FIX_LEN);
+    cdOffset = sizeof(JZLocalFileHeader) + strlen("a.txt") + FIX_LEN;
+    central = (JZGlobalFileHeader *)(z.bytes + cdOffset);
+
+    central->diskNumberStart = 1;
+    EXPECT(parse_cd(z.bytes, z.len) == JZ_ERR_UNSUPPORTED);
+
+    central->diskNumberStart = 0;
+    central->relativeOffsetOflocalHeader = 0xFFFFFFFF;
+    EXPECT(parse_cd(z.bytes, z.len) == JZ_ERR_UNSUPPORTED);
+}
+
+static void test_trailing_central_bytes(void) {
+    ZipBuf z;
+    size_t cdOffset;
+    uint32_t cdSize;
+    size_t endRecordOffset;
+
+    build_simple(&z, "a.txt", 0, 0, FIX_CRC, FIX_LEN, FIX_LEN,
+            fix_data, FIX_LEN);
+    cdOffset = sizeof(JZLocalFileHeader) + strlen("a.txt") + FIX_LEN;
+    cdSize = (uint32_t)(sizeof(JZGlobalFileHeader) + strlen("a.txt"));
+    endRecordOffset = z.len - sizeof(JZEndRecord);
+    memmove(z.bytes + endRecordOffset + 1, z.bytes + endRecordOffset,
+            sizeof(JZEndRecord));
+    z.bytes[endRecordOffset] = 'X';
+    z.len++;
+    ((JZEndRecord *)(z.bytes + endRecordOffset + 1))->centralDirectorySize =
+        cdSize + 1;
+    EXPECT(parse_cd_fully(z.bytes, z.len) == JZ_ERR_CORRUPT);
+    EXPECT(cdOffset + cdSize + 1 == endRecordOffset + 1);
+}
+
 // ---------------------------------------------------------------------------
 
 int main(void) {
@@ -684,6 +816,9 @@ int main(void) {
     test_cd_entry_overrun();
     test_zip64_endrecord();
     test_version_rejected();
+    test_central_local_mismatch();
+    test_unsupported_entry_layout();
+    test_trailing_central_bytes();
 
     printf("%d checks, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;

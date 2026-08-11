@@ -61,11 +61,12 @@ A small `make_clang.bat` is also provided just for laughs.
 
 # Included executables
 
-*Warning*, both the `jzip_demo` and `junzip_demo` WILL overwrite files silently!
-Zip demo assumes last parameter is the target and overwrites that file, and
-unzip demo overwrites any files already within the directory with contents of the zip. Be careful!
+*Warning*: `jzip_demo` overwrites its output file. The `junzip_demo` refuses
+existing output files, symlinked path components, and reparse-point paths; it
+never follows them outside the destination directory. Choose a destination
+directory with appropriate ownership and permissions.
 
-* `junzip_demo file.zip` unzips the `file.zip`
+* `junzip_demo file.zip destination-directory` extracts `file.zip`
 * `jzip_demo file1 file2 output.zip` creates a zip file
 * `junzip_dump file.zip` dumps the headers in `file.zip`
 * `junzip_test` checks if structures are the right size
@@ -73,6 +74,15 @@ unzip demo overwrites any files already within the directory with contents of th
 Note: ZIP entries that use the data descriptor flag (general purpose bit 3)
 are supported when sizes are known (e.g., from the central directory). The
 demo keeps central-directory sizes and `jzReadData` consumes the descriptor
-automatically so the file pointer lands on the next entry.
+automatically so the file pointer lands on the next entry. The reference demo
+validates the full central directory and all local headers before writing, and
+enforces limits of 10,000 entries, 256 MiB compressed or uncompressed per
+entry, and 1 GiB total uncompressed output. The whole-entry `jzReadData` API
+still requires callers to apply their own equivalent resource limits;
+`jzReadDataLimited` can enforce the compressed-size limit before decoding.
+
+The POSIX demo uses `openat()`/`mkdirat()` semantics. The Windows demo also
+runs, but uses a conservative policy that rejects reparse-point components and
+existing targets because the Win32 API lacks a direct `openat()` equivalent.
 
 Github: https://github.com/jokkebk/JUnzip

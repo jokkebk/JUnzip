@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #include "junzip.h"
 
@@ -11,7 +12,7 @@ int main(int argc, char *argv[]) {
     JZFile *zip;
     JZGlobalFileHeader jzGlobalHeader;
     JZEndRecord jzEndRecord;
-    long fpos, fsize;
+    JZOffset fpos, fsize;
     int i;
 
     if(argc < 2) {
@@ -25,6 +26,11 @@ int main(int argc, char *argv[]) {
     }
 
     zip = jzfile_from_stdio_file(fp);
+    if(zip == NULL) {
+        fprintf(stderr, "Couldn't allocate ZIP file handle!\n");
+        fclose(fp);
+        return -1;
+    }
 
     if(jzReadEndRecord(zip, &jzEndRecord)) {
         printf("Couldn't read ZIP file end record.\n");
@@ -39,11 +45,15 @@ int main(int argc, char *argv[]) {
     }
 
     for(i = 0; i < jzEndRecord.numEntries; i++) {
-        long centralPos = zip->tell(zip);
+        JZOffset centralPos;
         JZLocalFileHeader jzHeader;
         char filename[640]; // should be enough for everyone
 
-        printf("[%08X] ", (int)centralPos);
+        if(zip->tell(zip, &centralPos)) {
+            fprintf(stderr, "Couldn't read central directory position!\n");
+            goto endClose;
+        }
+        printf("[%08" PRIX64 "] ", centralPos);
 
         if(zip->read(zip, &jzGlobalHeader, sizeof(JZGlobalFileHeader)) <
                 sizeof(JZGlobalFileHeader)) {
@@ -76,7 +86,10 @@ int main(int argc, char *argv[]) {
         }
 
         // Read the corresponding local header via its relative offset
-        fpos = zip->tell(zip); // store current central dir position
+        if(zip->tell(zip, &fpos)) {
+            fprintf(stderr, "Couldn't read central directory position!\n");
+            goto endClose;
+        }
 
         if(zip->seek(zip, jzGlobalHeader.relativeOffsetOflocalHeader, SEEK_SET)) {
             fprintf(stderr, "Couldn't seek to local header %d!", i);
@@ -142,19 +155,22 @@ int main(int argc, char *argv[]) {
         printf("    relativeOffsetOflocalHeader: [%08X]\n", jzGlobalHeader.relativeOffsetOflocalHeader);
     }
 
-    fpos = zip->tell(zip);
-    zip->seek(zip, 0, SEEK_END);
-    fsize = zip->tell(zip);
+    if(zip->tell(zip, &fpos) || zip->seek(zip, 0, SEEK_END) ||
+            zip->tell(zip, &fsize)) {
+        fprintf(stderr, "Couldn't determine archive size!\n");
+        goto endClose;
+    }
 
-    if(fsize - fpos < sizeof(JZEndRecord)) {
-        printf("[%08X] Only %ld bytes remain, end record is 22 bytes, aborting!\n", (int)fpos, fsize - fpos);
+    if(fsize < fpos || fsize - fpos < sizeof(JZEndRecord)) {
+        printf("[%08" PRIX64 "] Only %" PRIu64 " bytes remain, end record is 22 bytes, aborting!\n",
+                fpos, fsize - fpos);
         return 0;
     }
 
     // We could use jzReadEndRecord but let's just be blindly optimistic here
     zip->seek(zip, fpos, SEEK_SET);
     zip->read(zip, &jzEndRecord, sizeof(JZEndRecord));
-    printf("[%08X] End record read\n", (int)fpos);
+    printf("[%08" PRIX64 "] End record read\n", fpos);
     printf("    signature: 0x%08X\n", jzEndRecord.signature);
     printf("    diskNumber: %d\n", jzEndRecord.diskNumber);
     printf("    centralDirectoryDiskNumber: %d\n", jzEndRecord.centralDirectoryDiskNumber);

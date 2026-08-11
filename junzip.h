@@ -50,10 +50,14 @@ extern "C" {
 
 typedef struct JZFile JZFile;
 
+// File positions are always represented as unsigned 64-bit values.  Seek
+// offsets are signed because SEEK_CUR may legally use a negative offset.
+typedef uint64_t JZOffset;
+
 struct JZFile {
     size_t (*read)(JZFile *file, void *buf, size_t size);
-    size_t (*tell)(JZFile *file);
-    int (*seek)(JZFile *file, size_t offset, int whence);
+    int (*tell)(JZFile *file, JZOffset *offset);
+    int (*seek)(JZFile *file, int64_t offset, int whence);
     int (*error)(JZFile *file);
     void (*close)(JZFile *file);
 };
@@ -125,10 +129,8 @@ typedef struct __attribute__ ((__packed__)) {
 typedef int (*JZRecordCallback)(JZFile *zip, int index, JZFileHeader *header,
         char *filename, void *user_data);
 
-// Cap for the end-of-file scan window in jzReadEndRecord. The library holds
-// no global mutable state; distinct JZFile instances may be used
-// concurrently from multiple threads.
-#define JZ_BUFFER_SIZE 65536
+// Maximum ZIP filename length representable by the classic ZIP format.
+#define JZ_MAX_FILENAME_LENGTH 65535
 
 // Read ZIP file end record. Will move within file.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord);
@@ -138,13 +140,22 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord);
 int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         JZRecordCallback callback, void *user_data);
 
-// Read local ZIP file header. Silent on errors so optimistic reading possible.
+// Read local ZIP file header. This legacy function updates header with local
+// values when the data-descriptor flag is clear. Callers that have validated
+// central-directory metadata should use jzReadLocalFileHeaderChecked instead.
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
         char *filename, int len);
 
 // Same as above but returns the full raw header
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
+
+// Read a local header and verify it against the already validated central
+// header. The central header is never modified. The local filename is checked
+// byte-for-byte against centralFilename, as are the method, flags, version,
+// and (when bit 3 is clear) CRC and sizes.
+int jzReadLocalFileHeaderChecked(JZFile *zip, JZFileHeader *centralHeader,
+        const char *centralFilename);
 
 // Standard CRC-32 (ZIP polynomial 0xEDB88320), available regardless of
 // which decompression backend (if any) is compiled in. Compatible with
@@ -167,8 +178,20 @@ uint32_t jz_crc32(uint32_t crc, const void *data, size_t size);
 //   are rejected with JZ_ERR_UNSUPPORTED.
 // - When bit 3 is set, sizes/CRC must be pre-filled from the central
 //   directory entry (local header fields are zero in that case).
+//
+// Resource contract: callers must independently bound compressedSize,
+// uncompressedSize, entry count, and aggregate output before allocating or
+// decoding. Use jzReadDataLimited when the compressed-size bound must be
+// enforced by the library before a backend reads or allocates input. The
+// whole-entry API is not a streaming resource limit.
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer,
         size_t bufferSize, uint32_t *bytesProduced);
+
+// Bounded variant for callers that also need to cap archive-controlled input
+// work/allocation (required by the whole-input Puff backend).
+int jzReadDataLimited(JZFile *zip, JZFileHeader *header, void *buffer,
+        size_t bufferSize, uint32_t compressedSizeLimit,
+        uint32_t *bytesProduced);
 
 #ifdef __cplusplus
 };

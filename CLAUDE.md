@@ -43,7 +43,7 @@ JUnzip is a minimalistic C library for reading and writing ZIP files. The entire
 
 ### Demo executables
 
-- **junzip_demo.c** — Unzip: reads central directory, seeks to each entry, extracts files (creates directories as needed)
+- **junzip_demo.c** — POSIX safe reference extractor: validates the archive in a first pass, then extracts through descriptor-relative directory operations
 - **jzip_demo.c** — Zip creator: builds ZIP from input files (store-only without zlib, compressed with zlib)
 - **junzip_dump.c** — Debug tool: dumps all local + global headers and end record fields
 - **junzip_test.c** — Struct size verification
@@ -54,4 +54,6 @@ JUnzip is a minimalistic C library for reading and writing ZIP files. The entire
 - The `JZFile` vtable abstraction allows custom I/O backends (not just stdio)
 - Central directory callback pattern: `jzReadCentralDirectory` calls a `JZRecordCallback` for each entry
 - Data descriptor support (bit 3 flag): `jzReadData` auto-consumes the trailing descriptor; callers should pre-fill `JZFileHeader` with central directory sizes when bit 3 is set
-- `jzBuffer` is a global 64KB buffer used internally for reading and decompression
+- `JZFile` uses checked 64-bit positions; `tell` reports failure explicitly
+- `jzReadLocalFileHeaderChecked` compares local metadata with the central header before extraction
+- Callers must impose independent entry-count, compressed-size, uncompressed-size, and aggregate-output limits before allocating for `jzReadData`
