@@ -41,29 +41,52 @@ utilities in one go:
 
 ```
 make
+make check
 ```
 
 You can make the zlib-enabled versions easily as well to get fast
 decompression and compression support to `jzip_demo` (not just store):
 
 ```
+make clean
 make HAVE_ZLIB=1
+make HAVE_ZLIB=1 check
 ```
 
 Or the lighter but bit slower `puff.c` powered decompression without the
 zlib dependency (and no compression, just store in `jzip_demo`):
 
 ```
+make clean
 make HAVE_PUFF=1
+make HAVE_PUFF=1 check
 ```
+
+The security suite is also available under both sanitizers:
+
+```
+make sanitize
+```
+
+`make sanitize` builds and runs the suite once with puff and once with zlib.
+The Makefile uses the system zlib (`-lz`); clean between backend changes so
+objects compiled with different feature defines are not mixed.
+
+On systems with the libFuzzer runtime, `make fuzz` builds the optional
+libFuzzer harness. `make fuzz-smoke` builds an ASan/UBSan standalone harness;
+run it with a ZIP seed, for example `./junzip_fuzz_smoke sample.zip`, for a
+400-iteration mutation/truncation smoke run.
 
 A small `make_clang.bat` is also provided just for laughs.
 
 # Included executables
 
-*Warning*, both the `jzip_demo` and `junzip_demo` WILL overwrite files silently!
-Zip demo assumes last parameter is the target and overwrites that file, and
-unzip demo overwrites any files already within the directory with contents of the zip. Be careful!
+`jzip_demo` overwrites its output archive, and `junzip_demo` overwrites
+existing regular files below the current directory. The extractor refuses
+absolute/traversal/control-character names, embedded NULs, symlinked path
+components, ZIP64/encrypted entries, and entries exceeding its 256 MiB per-file
+or 1 GiB total extraction budget. It ignores archived permission bits and
+creates ordinary files with safe default permissions.
 
 * `junzip_demo file.zip` unzips the `file.zip`
 * `jzip_demo file1 file2 output.zip` creates a zip file
@@ -72,7 +95,8 @@ unzip demo overwrites any files already within the directory with contents of th
 
 Note: ZIP entries that use the data descriptor flag (general purpose bit 3)
 are supported when sizes are known (e.g., from the central directory). The
-demo keeps central-directory sizes and `jzReadData` consumes the descriptor
-automatically so the file pointer lands on the next entry.
+library keeps central-directory sizes, consumes and verifies the descriptor,
+checks exact compressed/decompressed counts, and verifies CRC32 before
+returning success. ZIP64 is intentionally unsupported.
 
 Github: https://github.com/jokkebk/JUnzip

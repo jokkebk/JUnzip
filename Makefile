@@ -1,43 +1,73 @@
-# Use "make HAVE_ZLIB=1" to enable zlib decompression and compression.
-ifdef HAVE_ZLIB
-	# You could also use -lz but then we'll need custom compile cmds
-	LIBS = ../zlib/libz.a
-	DEFS = -DHAVE_ZLIB -I../zlib
-endif
+# Build the small command-line tools and the in-memory security regression
+# suite. Run `make clean` when switching HAVE_ZLIB/HAVE_PUFF backends.
 
-# Use "make HAVE_LIBS=1" to use compact puff() by Mark Adler for decompression
-ifdef HAVE_PUFF
-	LIBS = puff.o
-	DEFS = -DHAVE_PUFF
-endif
+CC ?= gcc
+CPPFLAGS +=
+CFLAGS += -Wall -Wextra
+LDFLAGS +=
+LDLIBS +=
 
 ifeq ($(OS),Windows_NT)
-	# MinGW gcc requires disabling MS bitfields for correct struct sizes.
-	CFLAGS=-Wall -mno-ms-bitfields $(DEFS)
-else
-	CFLAGS=-Wall $(DEFS)
+    CFLAGS += -mno-ms-bitfields
 endif
 
-CC=gcc
-OBJECTS=junzip_test.o junzip_demo.o junzip_dump.o junzip.o jzip_demo.o junzip_security_test.o $(LIBS)
-COMMANDS=junzip_demo junzip_test junzip_dump jzip_demo junzip_security_test
+ifdef HAVE_ZLIB
+    CPPFLAGS += -DHAVE_ZLIB
+    LDLIBS += -lz
+endif
+
+ifdef HAVE_PUFF
+    CPPFLAGS += -DHAVE_PUFF
+    PUFF_OBJECT = puff.o
+endif
+
+ifdef SANITIZE
+    SANITIZE_FLAGS = -fsanitize=address,undefined -fno-sanitize-recover=all
+    CFLAGS += $(SANITIZE_FLAGS) -fstack-protector-strong
+    LDFLAGS += $(SANITIZE_FLAGS)
+endif
+
+COMMON_OBJECTS = junzip.o $(PUFF_OBJECT)
+COMMANDS = junzip_demo junzip_test junzip_dump jzip_demo junzip_security_test
+
+.PHONY: all clean check check-puff check-zlib sanitize fuzz fuzz-smoke
 
 all: $(COMMANDS)
 
 clean:
-	$(RM) *.o $(COMMANDS)
+	$(RM) *.o $(COMMANDS) junzip_fuzz junzip_fuzz_smoke
 
 check: junzip_test junzip_security_test
 	./junzip_test
 	./junzip_security_test
 
-junzip_demo: junzip.o junzip_demo.o $(LIBS)
-junzip_dump: junzip.o junzip_dump.o $(LIBS)
-junzip_test: junzip.o junzip_test.o $(LIBS)
-jzip_demo: junzip.o jzip_demo.o $(LIBS)
-junzip_security_test: junzip.o junzip_security_test.o $(LIBS)
+check-puff:
+	$(MAKE) clean
+	$(MAKE) HAVE_PUFF=1 check
+
+check-zlib:
+	$(MAKE) clean
+	$(MAKE) HAVE_ZLIB=1 check
+
+sanitize:
+	$(MAKE) clean
+	$(MAKE) SANITIZE=1 HAVE_PUFF=1 check
+	$(MAKE) clean
+	$(MAKE) SANITIZE=1 HAVE_ZLIB=1 check
+
+fuzz:
+	clang -DHAVE_PUFF -Wall -Wextra -fsanitize=fuzzer,address,undefined \
+		junzip_fuzz.c junzip.c puff.c -o junzip_fuzz
+
+fuzz-smoke:
+	clang -DJUNZIP_FUZZ_STANDALONE -DHAVE_PUFF -Wall -Wextra \
+		-fsanitize=address,undefined junzip_fuzz.c junzip.c puff.c \
+		-o junzip_fuzz_smoke
+
+$(COMMANDS): %: %.o $(COMMON_OBJECTS)
+	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(OBJECTS): junzip.h
+$(COMMANDS:%=%.o) $(COMMON_OBJECTS): junzip.h

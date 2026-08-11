@@ -9,7 +9,13 @@ make                # Build all executables (no compression support)
 make HAVE_ZLIB=1    # Build with zlib (fast decompression + compression)
 make HAVE_PUFF=1    # Build with puff.c (lighter decompression, no zlib dependency)
 make clean          # Remove object files and built binaries
+make check          # Structure and security regression tests
+make sanitize       # Security tests under ASan/UBSan for both backends
 ```
+
+Run `make clean` when switching between `HAVE_ZLIB` and `HAVE_PUFF`; the
+feature defines are compile-time choices. The zlib build links the system
+library with `-lz`.
 
 Single file compile example (no make):
 ```bash
@@ -21,10 +27,14 @@ On Windows/MinGW, the Makefile adds `-mno-ms-bitfields` automatically for correc
 ## Testing
 
 ```bash
-make && ./junzip_test   # Verifies struct sizes match ZIP spec (30, 46, 26, 22 bytes)
+make check              # Runs structure and in-memory security tests
+make HAVE_PUFF=1 check  # Includes puff deflate coverage
+make HAVE_ZLIB=1 check  # Includes zlib deflate coverage
 ```
 
-There is no test framework; `junzip_test.c` is a simple size-check executable.
+There is no test framework; `junzip_test.c` checks structure sizes and
+`junzip_security_test.c` builds malicious/edge-case ZIP fixtures entirely in
+memory.
 
 ## Architecture
 
@@ -53,5 +63,9 @@ JUnzip is a minimalistic C library for reading and writing ZIP files. The entire
 - All structs use `__attribute__((__packed__))` to match ZIP binary format exactly
 - The `JZFile` vtable abstraction allows custom I/O backends (not just stdio)
 - Central directory callback pattern: `jzReadCentralDirectory` calls a `JZRecordCallback` for each entry
-- Data descriptor support (bit 3 flag): `jzReadData` auto-consumes the trailing descriptor; callers should pre-fill `JZFileHeader` with central directory sizes when bit 3 is set
-- `jzBuffer` is a global 64KB buffer used internally for reading and decompression
+- Data descriptor support (bit 3 flag): `jzReadData` auto-consumes and verifies the trailing descriptor; callers should pre-fill `JZFileHeader` with central directory sizes when bit 3 is set
+- `jzReadData` requires a caller-provided output-buffer length, enforces exact
+  production, and verifies CRC32. ZIP64 and encrypted entries are rejected.
+- The library has no global mutable state. Separate `JZFile` instances may be
+  used concurrently; a single backend handle still requires its own
+  synchronization if shared between threads.
