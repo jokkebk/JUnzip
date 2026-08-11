@@ -6,11 +6,6 @@
 
 #include "junzip.h"
 
-// Global shared buffer. Note: this makes the library non-thread-safe and
-// non-reentrant. The filename pointer passed to JZRecordCallback also points
-// into this buffer and is only valid until the next library call.
-unsigned char jzBuffer[JZ_BUFFER_SIZE];
-
 // Standard CRC-32 (polynomial 0xEDB88320, reflected), as used by the ZIP
 // format. The table is built on the stack per call: it costs ~2k simple
 // operations and keeps the function reentrant.
@@ -37,7 +32,8 @@ uint32_t jz_crc32(uint32_t crc, const void *data, size_t size) {
 // Read ZIP file end record. Will move within file.
 int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
     long fileSize, readBytes, i;
-    JZEndRecord *er;
+    unsigned char *window;
+    int retval = Z_ERRNO;
 
     if(zip->seek(zip, 0, SEEK_END)) {
         fprintf(stderr, "Couldn't go to end of zip file!");
@@ -49,16 +45,21 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
         return Z_ERRNO;
     }
 
-    readBytes = (fileSize < sizeof(jzBuffer)) ? fileSize : sizeof(jzBuffer);
+    readBytes = (fileSize < JZ_BUFFER_SIZE) ? fileSize : JZ_BUFFER_SIZE;
 
-    if(zip->seek(zip, fileSize - readBytes, SEEK_SET)) {
-        fprintf(stderr, "Cannot seek in zip file!");
+    if((window = (unsigned char *)malloc(readBytes)) == NULL) {
+        fprintf(stderr, "Couldn't allocate end record scan buffer!");
         return Z_ERRNO;
     }
 
-    if(zip->read(zip, jzBuffer, readBytes) < readBytes) {
+    if(zip->seek(zip, fileSize - readBytes, SEEK_SET)) {
+        fprintf(stderr, "Cannot seek in zip file!");
+        goto done;
+    }
+
+    if(zip->read(zip, window, readBytes) < readBytes) {
         fprintf(stderr, "Couldn't read end of zip file!");
-        return Z_ERRNO;
+        goto done;
     }
 
     // Scan backwards for end record signature, validating that the candidate
@@ -66,33 +67,38 @@ int jzReadEndRecord(JZFile *zip, JZEndRecord *endRecord) {
     // This rejects false positives from signatures embedded in file data or
     // ZIP comments.
     for(i = readBytes - sizeof(JZEndRecord); i >= 0; i--) {
-        er = (JZEndRecord *)(jzBuffer + i);
+        JZEndRecord *er = (JZEndRecord *)(window + i);
         if(er->signature == 0x06054B50) {
             long candidatePos = fileSize - readBytes + i;
-            if(candidatePos + sizeof(JZEndRecord) + er->zipCommentLength == fileSize)
+            if(candidatePos + sizeof(JZEndRecord) + er->zipCommentLength == fileSize) {
+                memcpy(endRecord, er, sizeof(JZEndRecord));
+                retval = Z_OK;
                 break;
+            }
         }
     }
 
-    if(i < 0) {
+    if(retval != Z_OK) {
         fprintf(stderr, "End record signature not found in zip!");
-        return Z_ERRNO;
+        goto done;
     }
-
-    memcpy(endRecord, er, sizeof(JZEndRecord));
 
     if(endRecord->diskNumber || endRecord->centralDirectoryDiskNumber ||
             endRecord->numEntries != endRecord->numEntriesThisDisk) {
         fprintf(stderr, "Multifile zips not supported!");
-        return Z_ERRNO;
+        retval = Z_ERRNO;
+        goto done;
     }
 
     if(endRecord->centralDirectoryOffset + endRecord->centralDirectorySize > fileSize) {
         fprintf(stderr, "Central directory offset/size exceeds file size!");
-        return Z_ERRNO;
+        retval = Z_ERRNO;
+        goto done;
     }
 
-    return Z_OK;
+done:
+    free(window);
+    return retval;
 }
 
 // Read ZIP file global directory. Will move within file.
@@ -100,7 +106,8 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         JZRecordCallback callback, void *user_data) {
     JZGlobalFileHeader fileHeader;
     JZFileHeader header;
-    int i;
+    char *filename;
+    int i, keepGoing;
 
     if(zip->seek(zip, endRecord->centralDirectoryOffset, SEEK_SET)) {
         fprintf(stderr, "Cannot seek in zip file!");
@@ -119,22 +126,24 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
             return Z_ERRNO;
         }
 
-        if(fileHeader.fileNameLength + 1 >= JZ_BUFFER_SIZE) {
-            fprintf(stderr, "Too long file name %d!", i);
+        if((filename = (char *)malloc(fileHeader.fileNameLength + 1)) == NULL) {
+            fprintf(stderr, "Couldn't allocate filename %d!", i);
             return Z_ERRNO;
         }
 
-        if(zip->read(zip, jzBuffer, fileHeader.fileNameLength) <
+        if(zip->read(zip, filename, fileHeader.fileNameLength) <
                 fileHeader.fileNameLength) {
             fprintf(stderr, "Couldn't read filename %d!", i);
+            free(filename);
             return Z_ERRNO;
         }
 
-        jzBuffer[fileHeader.fileNameLength] = '\0'; // NULL terminate
+        filename[fileHeader.fileNameLength] = '\0'; // NULL terminate
 
         if(zip->seek(zip, fileHeader.extraFieldLength, SEEK_CUR) ||
                 zip->seek(zip, fileHeader.fileCommentLength, SEEK_CUR)) {
             fprintf(stderr, "Couldn't skip extra field or file comment %d", i);
+            free(filename);
             return Z_ERRNO;
         }
 
@@ -149,7 +158,9 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
         header.uncompressedSize = fileHeader.uncompressedSize;
         header.offset = fileHeader.relativeOffsetOflocalHeader;
 
-        if(!callback(zip, i, &header, (char *)jzBuffer, user_data))
+        keepGoing = callback(zip, i, &header, filename, user_data);
+        free(filename);
+        if(!keepGoing)
             break; // end if callback returns zero
     }
 

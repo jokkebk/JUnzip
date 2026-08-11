@@ -119,10 +119,15 @@ typedef struct __attribute__ ((__packed__)) {
     // Followed by .ZIP file comment (variable size)
 } JZEndRecord;
 
-// Callback prototype for central and local file record reading functions
+// Callback prototype for central and local file record reading functions.
+// The filename pointer is only valid for the duration of the callback;
+// copy it if you need it later.
 typedef int (*JZRecordCallback)(JZFile *zip, int index, JZFileHeader *header,
         char *filename, void *user_data);
 
+// Cap for the end-of-file scan window in jzReadEndRecord. The library holds
+// no global mutable state; distinct JZFile instances may be used
+// concurrently from multiple threads.
 #define JZ_BUFFER_SIZE 65536
 
 // Read ZIP file end record. Will move within file.
